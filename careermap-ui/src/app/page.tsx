@@ -289,7 +289,7 @@ function AuthModal({ onClose }: { onClose: () => void }) {
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8080/api/v1/auth/register', {
+      const response = await fetch('https://careermap-production.up.railway.app/api/v1/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password }),
@@ -317,7 +317,7 @@ function AuthModal({ onClose }: { onClose: () => void }) {
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8080/api/v1/auth/login', {
+      const response = await fetch('https://careermap-production.up.railway.app/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
