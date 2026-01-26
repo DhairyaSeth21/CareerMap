@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["jdk21"]
-
-[phases.build]
-cmd = "./gradlew build -x test"
-
-[start]
-cmd = "java -Dspring.profiles.active=prod -Dserver.port=$PORT -jar build/libs/*.jar"
