@@ -1,8 +1,7 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "./gradlew build -x test"
 
 [deploy]
-startCommand = "java -Dserver.port=$PORT -jar build/libs/*.jar"
+startCommand = "java -Dspring.profiles.active=prod -Dserver.port=$PORT -jar build/libs/*.jar"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
