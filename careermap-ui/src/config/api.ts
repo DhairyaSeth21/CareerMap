@@ -1,11 +1,10 @@
-// API Configuration
-// Temporarily hardcoded for Railway deployment
-// TODO: Fix environment variable injection
-export const API_URL = typeof window === 'undefined'
-  ? (process.env.NEXT_PUBLIC_API_URL || 'https://careermap-production.up.railway.app')
-  : 'https://careermap-production.up.railway.app';
+// API Configuration - FORCED PRODUCTION URL v2
+// Hardcoded for Railway deployment
+const PRODUCTION_URL = 'https://careermap-production.up.railway.app';
+export const API_URL = PRODUCTION_URL;
 
-console.log('API_URL configured as:', API_URL);
+console.log('🚀 API_URL configured as:', API_URL);
+console.log('🚀 PRODUCTION MODE ACTIVE');
 
 export const API_ENDPOINTS = {
   auth: {
