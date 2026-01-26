@@ -475,7 +475,7 @@ function CalibrationResults({
           >
             <h3 className="text-lg font-bold text-green-400 mb-4">Strong</h3>
             <ul className="space-y-2">
-              {analysis.strong.map((item, i) => (
+              {analysis.strong.map((item: string, i: number) => (
                 <li key={i} className="text-sm text-slate-300">• {item}</li>
               ))}
             </ul>
@@ -490,7 +490,7 @@ function CalibrationResults({
           >
             <h3 className="text-lg font-bold text-yellow-400 mb-4">Gaps</h3>
             <ul className="space-y-2">
-              {analysis.gaps.map((item, i) => (
+              {analysis.gaps.map((item: string, i: number) => (
                 <li key={i} className="text-sm text-slate-300">• {item}</li>
               ))}
             </ul>
@@ -505,7 +505,7 @@ function CalibrationResults({
           >
             <h3 className="text-lg font-bold text-slate-400 mb-4">Unknown</h3>
             <ul className="space-y-2">
-              {analysis.unknown.map((item, i) => (
+              {analysis.unknown.map((item: string, i: number) => (
                 <li key={i} className="text-sm text-slate-300">• {item}</li>
               ))}
             </ul>
