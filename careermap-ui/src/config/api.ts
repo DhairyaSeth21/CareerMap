@@ -1,6 +1,9 @@
 // API Configuration
 // Uses environment variable for production, falls back to localhost for development
+// Note: NEXT_PUBLIC_API_URL must be set at build time for Railway deployment
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+
+console.log('API_URL configured as:', API_URL);
 
 export const API_ENDPOINTS = {
   auth: {
