@@ -1,7 +1,9 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080",
+  baseURL: "https://careermap-production.up.railway.app",
 });
+
+console.log('🔥 API configured with baseURL:', api.defaults.baseURL);
 
 export default api;
