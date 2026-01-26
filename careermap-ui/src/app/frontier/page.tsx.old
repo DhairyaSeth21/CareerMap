@@ -1,0 +1,632 @@
+'use client';
+
+import { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import ReactFlow, {
+  Node,
+  Edge,
+  Controls,
+  Background,
+  useNodesState,
+  useEdgesState,
+  Panel,
+  ReactFlowProvider,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
+import ELK from 'elkjs/lib/elk.bundled.js';
+import SkillNode from './SkillNode';
+import EvidenceModal from './EvidenceModal';
+import AssessmentOverlay from './AssessmentOverlay';
+import DomainView from './DomainView';
+import RoleView from './RoleView';
+import PathView from './PathView';
+
+const elk = new ELK();
+
+const nodeTypes = {
+  skillNode: SkillNode,
+};
+
+type ZoomLevel = 'domain' | 'role' | 'path' | 'skill';
+
+interface SkillNodeData {
+  skillId: number;
+  skillName: string;
+  status: 'UNSEEN' | 'INFERRED' | 'ACTIVE' | 'PROVED' | 'STALE';
+  confidence: number;
+  demandWeight: number;
+  unlockPotential?: number;
+  isRecommended?: boolean;
+  isProminent?: boolean;
+}
+
+interface FrontierData {
+  role: {
+    id: number;
+    name: string;
+    category: string;
+  };
+  frontierPreview: Array<{
+    skillId: number;
+    skillName: string;
+    status: string;
+    confidence: number;
+    demandWeight: number;
+  }>;
+  highlightedSkill?: {
+    id: number;
+    name: string;
+    status: string;
+    confidence: number;
+    why: string;
+  };
+  recommendedAction: {
+    type: 'PROBE' | 'BUILD' | 'APPLY';
+    label: string;
+    skillId: number;
+    skillName: string;
+    estimatedMinutes: number;
+    payload: Record<string, any>;
+  };
+  learningPath?: {
+    pathId: number;
+    units: Array<{
+      unitId: number;
+      unitNumber: number;
+      title: string;
+      status: string;
+      stepsCount: number;
+    }>;
+    currentStep: {
+      stepId: number;
+      title: string;
+      skillName: string;
+      status: string;
+    };
+  };
+}
+
+interface SelectedSkill {
+  id: number;
+  name: string;
+  status: string;
+  confidence: number;
+  demandWeight: number;
+  unlockPotential?: number;
+  why?: string;
+  blockers?: string[];
+}
+
+function FrontierMapInner() {
+  const router = useRouter();
+
+  // Multi-level zoom state
+  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>('domain');
+  const [selectedDomainId, setSelectedDomainId] = useState<number | null>(null);
+  const [selectedDomainName, setSelectedDomainName] = useState<string>('');
+  const [selectedRoleId, setSelectedRoleId] = useState<number | null>(null);
+  const [selectedRoleName, setSelectedRoleName] = useState<string>('');
+  const [selectedPathId, setSelectedPathId] = useState<number | null>(null);
+
+  // Existing state
+  const [frontierData, setFrontierData] = useState<FrontierData | null>(null);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showEvidenceModal, setShowEvidenceModal] = useState(false);
+  const [userId, setUserId] = useState<number | null>(null);
+  const [selectedSkill, setSelectedSkill] = useState<SelectedSkill | null>(null);
+  const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
+  const [showModeMenu, setShowModeMenu] = useState(false);
+  const [showAssessmentOverlay, setShowAssessmentOverlay] = useState(false);
+  const [assessmentSkillName, setAssessmentSkillName] = useState<string>("");
+
+  useEffect(() => {
+    const userStr = localStorage.getItem('user');
+    if (!userStr) {
+      router.push('/login');
+      return;
+    }
+
+    try {
+      const user = JSON.parse(userStr);
+      if (!user.userId) {
+        router.push('/login');
+        return;
+      }
+      setUserId(user.userId);
+      setLoading(false);
+    } catch (err) {
+      console.error('Failed to parse user data:', err);
+      router.push('/login');
+    }
+  }, [router]);
+
+  const fetchFrontier = async (uid: number) => {
+    try {
+      setLoading(true);
+
+      // Fetch both frontier data AND learning path
+      const [frontierRes, pathRes] = await Promise.all([
+        fetch(`http://localhost:8080/api/v2/frontier?userId=${uid}`),
+        fetch(`http://localhost:8080/api/v1/learning-path/${uid}/active`)
+      ]);
+
+      if (!frontierRes.ok) {
+        throw new Error('Failed to fetch frontier');
+      }
+
+      const frontierData = await frontierRes.json();
+      if (frontierData.error) {
+        throw new Error(frontierData.error);
+      }
+
+      // Merge path data if exists
+      let pathData = null;
+      if (pathRes.ok) {
+        pathData = await pathRes.json();
+        if (!pathData.error) {
+          // Fetch path units and current step
+          const [unitsRes, stepRes] = await Promise.all([
+            fetch(`http://localhost:8080/api/v1/learning-path/${pathData.pathId}/units`),
+            fetch(`http://localhost:8080/api/v1/learning-path/${pathData.pathId}/current-step?userId=${uid}`)
+          ]);
+
+          if (unitsRes.ok && stepRes.ok) {
+            const unitsData = await unitsRes.json();
+            const stepData = await stepRes.json();
+
+            frontierData.learningPath = {
+              pathId: pathData.pathId,
+              units: unitsData.units || [],
+              currentStep: stepData
+            };
+          }
+        }
+      }
+
+      setFrontierData(frontierData);
+      await buildGraph(frontierData);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const buildGraph = async (data: FrontierData) => {
+    const recommendedId = data.highlightedSkill?.id;
+
+    // If learning path exists, inject path nodes into the graph
+    if (data.learningPath) {
+      // Find skill IDs for path steps from frontierPreview
+      const pathSkillIds = new Set<number>();
+
+      data.learningPath.units.forEach(unit => {
+        const matchingSkill = data.frontierPreview.find(s =>
+          s.skillName.toLowerCase().includes(unit.title.toLowerCase()) ||
+          unit.title.toLowerCase().includes(s.skillName.toLowerCase())
+        );
+        if (matchingSkill) {
+          pathSkillIds.add(matchingSkill.skillId);
+        }
+      });
+
+      // Highlight current step
+      const currentStepSkill = data.frontierPreview.find(s =>
+        s.skillName.toLowerCase() === data.learningPath!.currentStep.skillName.toLowerCase()
+      );
+      if (currentStepSkill) {
+        pathSkillIds.add(currentStepSkill.skillId);
+      }
+
+      // Build nodes
+      const nodeList: Node[] = data.frontierPreview.map((skill) => {
+        const isCurrentStep = currentStepSkill?.skillId === skill.skillId;
+        const isInPath = pathSkillIds.has(skill.skillId);
+
+        return {
+          id: String(skill.skillId),
+          type: 'skillNode',
+          position: { x: 0, y: 0 },
+          data: {
+            skillId: skill.skillId,
+            skillName: skill.skillName,
+            status: skill.status as any,
+            confidence: skill.confidence,
+            demandWeight: skill.demandWeight,
+            isRecommended: skill.skillId === recommendedId,
+            isProminent: isCurrentStep,
+            isInPath: isInPath,
+          },
+        };
+      });
+
+      const layoutedNodes = await getLayoutedElements(nodeList, []);
+      setNodes(layoutedNodes);
+      setEdges([]);
+    } else {
+      // Standard graph without path
+      const nodeList: Node[] = data.frontierPreview.map((skill) => ({
+        id: String(skill.skillId),
+        type: 'skillNode',
+        position: { x: 0, y: 0 },
+        data: {
+          skillId: skill.skillId,
+          skillName: skill.skillName,
+          status: skill.status as any,
+          confidence: skill.confidence,
+          demandWeight: skill.demandWeight,
+          isRecommended: skill.skillId === recommendedId,
+        },
+      }));
+
+      const layoutedNodes = await getLayoutedElements(nodeList, []);
+      setNodes(layoutedNodes);
+      setEdges([]);
+    }
+  };
+
+  const getLayoutedElements = async (nodes: Node[], edges: Edge[]) => {
+    const graph = {
+      id: 'root',
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'RIGHT',
+        'elk.spacing.nodeNode': '80',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '120',
+      },
+      children: nodes.map((node) => ({
+        id: node.id,
+        width: 180,
+        height: 80,
+      })),
+      edges: edges.map((edge) => ({
+        id: edge.id,
+        sources: [edge.source],
+        targets: [edge.target],
+      })),
+    };
+
+    const layout = await elk.layout(graph);
+
+    return nodes.map((node) => {
+      const layoutNode = layout.children?.find((n) => n.id === node.id);
+      return {
+        ...node,
+        position: {
+          x: layoutNode?.x ?? node.position.x,
+          y: layoutNode?.y ?? node.position.y,
+        },
+      };
+    });
+  };
+
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      const nodeData = node.data as SkillNodeData;
+      const skill = frontierData?.frontierPreview.find((s) => s.skillId === nodeData.skillId);
+      if (skill) {
+        setSelectedSkill({
+          id: skill.skillId,
+          name: skill.skillName,
+          status: skill.status,
+          confidence: skill.confidence,
+          demandWeight: skill.demandWeight,
+          why: frontierData?.highlightedSkill?.id === skill.skillId
+            ? frontierData.highlightedSkill.why
+            : undefined,
+        });
+      }
+    },
+    [frontierData]
+  );
+
+  const handleCloseSkillDetails = () => {
+    setSelectedSkill(null);
+  };
+
+  const handleAction = (type: 'PROBE' | 'BUILD' | 'APPLY', skillName: string) => {
+    switch (type) {
+      case 'PROBE':
+        setAssessmentSkillName(skillName);
+        setShowAssessmentOverlay(true);
+        break;
+      case 'BUILD':
+        alert('Build mode coming soon - will open as overlay');
+        break;
+      case 'APPLY':
+        window.open('/opportunities', '_blank');
+        break;
+    }
+  };
+
+  // Multi-level navigation handlers
+  const handleSelectDomain = (domainId: number, domainName: string) => {
+    setSelectedDomainId(domainId);
+    setSelectedDomainName(domainName);
+    setZoomLevel('role');
+  };
+
+  const handleSelectRole = (roleId: number, roleName: string) => {
+    setSelectedRoleId(roleId);
+    setSelectedRoleName(roleName);
+    setZoomLevel('path');
+  };
+
+  const handleViewSkillGraph = (pathId: number) => {
+    setSelectedPathId(pathId);
+    setZoomLevel('skill');
+    if (userId) {
+      fetchFrontier(userId);
+    }
+  };
+
+  const handleBackToDomains = () => {
+    setZoomLevel('domain');
+    setSelectedDomainId(null);
+    setSelectedDomainName('');
+  };
+
+  const handleBackToRoles = () => {
+    setZoomLevel('role');
+    setSelectedRoleId(null);
+    setSelectedRoleName('');
+  };
+
+  const handleBackToPath = () => {
+    setZoomLevel('path');
+    setSelectedPathId(null);
+  };
+
+  // Close mode menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => {
+      if (showModeMenu) setShowModeMenu(false);
+    };
+
+    if (showModeMenu) {
+      document.addEventListener('click', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [showModeMenu]);
+
+  if (loading && zoomLevel === 'skill') {
+    return (
+      <div className="h-screen w-screen bg-black flex items-center justify-center">
+        <div className="text-white text-xl">Loading Frontier Map...</div>
+      </div>
+    );
+  }
+
+  // Render different views based on zoom level
+  if (zoomLevel === 'domain') {
+    return <DomainView onSelectDomain={handleSelectDomain} />;
+  }
+
+  if (zoomLevel === 'role' && selectedDomainId) {
+    return (
+      <RoleView
+        domainId={selectedDomainId}
+        domainName={selectedDomainName}
+        onSelectRole={handleSelectRole}
+        onBack={handleBackToDomains}
+      />
+    );
+  }
+
+  if (zoomLevel === 'path' && selectedRoleId && userId) {
+    return (
+      <PathView
+        roleId={selectedRoleId}
+        roleName={selectedRoleName}
+        userId={userId}
+        onViewSkillGraph={handleViewSkillGraph}
+        onBack={handleBackToRoles}
+      />
+    );
+  }
+
+  // Skill graph view (original frontier visualization)
+  if (error) {
+    return (
+      <div className="h-screen w-screen bg-black flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-red-500 text-xl mb-4">Error: {error}</div>
+          <button
+            onClick={() => userId && fetchFrontier(userId)}
+            className="px-6 py-2 bg-white text-black rounded hover:bg-gray-200"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!frontierData) return null;
+
+  return (
+    <div className="h-screen w-screen bg-black relative overflow-hidden">
+      {/* Floating Top Controls */}
+      <div className="absolute top-0 left-0 right-0 z-30 px-6 py-4 flex items-center justify-between pointer-events-none">
+        {/* Left: Role Indicator + Back Button */}
+        <div className="flex items-center gap-3 pointer-events-auto">
+          <button
+            onClick={handleBackToPath}
+            className="px-4 py-2 bg-black/70 backdrop-blur-xl border border-gray-800/50 rounded-full text-white hover:bg-black/90 transition-all text-sm"
+          >
+            ← Back to Path
+          </button>
+          <div className="flex items-center gap-3 bg-black/70 backdrop-blur-xl border border-gray-800/50 rounded-full px-5 py-2.5 shadow-lg">
+            <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            <span className="text-xs font-bold text-white tracking-wide">
+              {frontierData.role.name}
+            </span>
+          </div>
+        </div>
+
+        {/* Right: Action Buttons */}
+        <div className="flex items-center gap-3 pointer-events-auto">
+          <button
+            onClick={() => setShowEvidenceModal(true)}
+            className="px-5 py-2.5 bg-white/95 text-black rounded-full hover:bg-white transition-all text-sm font-bold shadow-lg hover:scale-105"
+          >
+            + Evidence
+          </button>
+
+          {/* Mode Menu Button */}
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowModeMenu(!showModeMenu);
+              }}
+              className="w-10 h-10 bg-black/70 backdrop-blur-xl border border-gray-800/50 rounded-full hover:bg-black/90 transition-all shadow-lg flex items-center justify-center"
+            >
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+
+            {/* Dropdown Menu */}
+            {showModeMenu && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 top-12 w-48 bg-black/90 backdrop-blur-xl border border-gray-700/50 rounded-xl shadow-2xl overflow-hidden"
+              >
+                <button
+                  onClick={() => {
+                    router.push('/');
+                    setShowModeMenu(false);
+                  }}
+                  className="w-full px-4 py-3 text-left text-white hover:bg-white/10 transition-colors text-sm"
+                >
+                  Dashboard
+                </button>
+                <button
+                  onClick={() => {
+                    handleBackToDomains();
+                    setShowModeMenu(false);
+                  }}
+                  className="w-full px-4 py-3 text-left text-white hover:bg-white/10 transition-colors text-sm"
+                >
+                  All Domains
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ReactFlow Graph */}
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
+        onInit={setReactFlowInstance}
+        nodeTypes={nodeTypes}
+        fitView
+        minZoom={0.1}
+        maxZoom={2}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background color="#1f2937" gap={20} />
+        <Controls showInteractive={false} />
+
+        {/* Skill Details Panel */}
+        {selectedSkill && (
+          <Panel position="bottom-right" className="bg-transparent">
+            <div className="bg-black/90 backdrop-blur-xl border border-gray-800 rounded-2xl p-6 w-96 shadow-2xl">
+              <div className="flex items-start justify-between mb-4">
+                <h3 className="text-xl font-bold text-white">{selectedSkill.name}</h3>
+                <button
+                  onClick={handleCloseSkillDetails}
+                  className="text-gray-400 hover:text-white transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="space-y-3 mb-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-400 text-sm">Status</span>
+                  <span className="text-white font-semibold">{selectedSkill.status}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-400 text-sm">Confidence</span>
+                  <span className="text-white font-semibold">{(selectedSkill.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-400 text-sm">Demand</span>
+                  <span className="text-white font-semibold">{selectedSkill.demandWeight.toFixed(1)}</span>
+                </div>
+              </div>
+
+              {selectedSkill.why && (
+                <div className="mb-4 p-3 bg-blue-500/10 rounded-lg border border-blue-500/30">
+                  <p className="text-blue-200 text-sm">{selectedSkill.why}</p>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleAction('PROBE', selectedSkill.name)}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-semibold"
+                >
+                  Assess
+                </button>
+                <button
+                  onClick={() => handleAction('BUILD', selectedSkill.name)}
+                  className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm font-semibold"
+                >
+                  Learn
+                </button>
+              </div>
+            </div>
+          </Panel>
+        )}
+      </ReactFlow>
+
+      {/* Evidence Modal */}
+      {showEvidenceModal && userId && (
+        <EvidenceModal
+          userId={userId}
+          onClose={() => setShowEvidenceModal(false)}
+          onEvidenceSubmitted={() => {
+            setShowEvidenceModal(false);
+            fetchFrontier(userId);
+          }}
+        />
+      )}
+
+      {/* Assessment Overlay */}
+      {showAssessmentOverlay && userId && (
+        <AssessmentOverlay
+          userId={userId}
+          skillName={assessmentSkillName}
+          onClose={() => setShowAssessmentOverlay(false)}
+          onAssessmentComplete={() => {
+            setShowAssessmentOverlay(false);
+            fetchFrontier(userId);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function FrontierMap() {
+  return (
+    <ReactFlowProvider>
+      <FrontierMapInner />
+    </ReactFlowProvider>
+  );
+}

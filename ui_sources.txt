@@ -1,0 +1,7 @@
+src/ui/MainFX.java
+src/ui/controllers/GoalsController.java
+src/ui/controllers/AnalyzeJobController.java
+src/ui/controllers/DashboardController.java
+src/ui/controllers/SkillProgressController.java
+src/ui/controllers/TrendsController.java
+src/ui/AppNavigator.java

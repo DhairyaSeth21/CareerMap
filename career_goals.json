@@ -1,0 +1,10 @@
+{
+  "AI Engineer": ["python", "tensorflow", "sql", "docker", "aws"],
+  "Backend Developer": ["java", "sql", "docker", "aws", "spring"],
+  "Frontend Developer": ["javascript", "react", "html", "css", "typescript"],
+  "Data Analyst": ["python", "sql", "excel", "tableau", "powerbi"],
+  "DevOps Engineer": ["docker", "aws", "kubernetes", "linux", "ci/cd"],
+  "Game Developer": ["c++", "unity", "blender", "git", "physics"],
+  "Cybersecurity Analyst": ["python", "networking", "linux", "firewalls", "cryptography"]
+}
+

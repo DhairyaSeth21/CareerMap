@@ -1,0 +1,4154 @@
+package com.careermappro.services;
+
+import com.careermappro.models.DetailedPathNode;
+import com.careermappro.models.LearningResource;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import okhttp3.*;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * OpenAIService
+ * Unified service for all OpenAI API interactions
+ * - Path generation (AI-generated personalized learning paths)
+ * - Quiz generation (fresh quizzes per attempt)
+ * - Answer explanations (immediate feedback on wrong answers)
+ */
+@Service
+public class OpenAIService {
+
+    @Value("${openai.api.key}")
+    private String apiKey;
+
+    private final OkHttpClient httpClient = new OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+    private static final String MODEL = "gpt-4o-mini"; // Fast and cost-effective
+
+    /**
+     * Generate a personalized learning path for a role
+     * Returns a list of skill IDs in recommended learning order
+     */
+    public List<Integer> generateLearningPath(Integer roleId, String roleName, Integer userId, List<Map<String, Object>> availableSkills) {
+        String prompt = buildPathPrompt(roleName, availableSkills);
+        String response = callOpenAI(prompt, 0.7, 1000);
+
+        // Parse the response to extract skill IDs
+        return parseSkillIdsFromResponse(response, availableSkills);
+    }
+
+    /**
+     * Generate DETAILED learning path with resources, dependencies, and guidance
+     * This is teacher-level guidance, not roadmap fluff
+     * GENERATES 100-150+ GRANULAR NODES for comprehensive textbook-level coverage
+     */
+    public List<DetailedPathNode> generateDetailedLearningPath(Integer roleId, String roleName, Integer userId, List<Map<String, Object>> availableSkills) {
+        // ALWAYS use programmatic generation - OpenAI is unreliable and times out
+        System.out.println("[PATH-GEN] Using programmatic generation for " + roleName);
+        return generateProgrammaticPath(roleName, availableSkills);
+    }
+
+    /**
+     * Generate a fresh quiz for a skill
+     * Returns quiz questions in JSON format
+     */
+    public Map<String, Object> generateQuiz(String skillName, String difficulty, int numQuestions) {
+        String prompt = buildQuizPrompt(skillName, difficulty, numQuestions);
+        String response = callOpenAI(prompt, 0.8, 2000);
+
+        try {
+            // Parse JSON response
+            JsonNode root = objectMapper.readTree(response);
+            Map<String, Object> quiz = new HashMap<>();
+            quiz.put("skillName", skillName);
+            quiz.put("questions", parseQuestions(root));
+            return quiz;
+        } catch (Exception e) {
+            System.err.println("[OPENAI] Failed to parse quiz: " + e.getMessage());
+            return generateFallbackQuiz(skillName, numQuestions);
+        }
+    }
+
+    /**
+     * Generate explanation for a wrong answer
+     * Returns detailed explanation of why answer was wrong and what the correct answer is
+     */
+    public String generateExplanation(String question, String correctAnswer, String userAnswer, String skillName) {
+        String prompt = buildExplanationPrompt(question, correctAnswer, userAnswer, skillName);
+        return callOpenAI(prompt, 0.7, 500);
+    }
+
+    /**
+     * Call OpenAI API
+     */
+    private String callOpenAI(String prompt, double temperature, int maxTokens) {
+        try {
+            // Build request body
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", MODEL);
+            requestBody.put("temperature", temperature);
+            requestBody.put("max_tokens", maxTokens);
+
+            List<Map<String, String>> messages = new ArrayList<>();
+            Map<String, String> message = new HashMap<>();
+            message.put("role", "user");
+            message.put("content", prompt);
+            messages.add(message);
+            requestBody.put("messages", messages);
+
+            String jsonBody = objectMapper.writeValueAsString(requestBody);
+
+            Request request = new Request.Builder()
+                .url(OPENAI_API_URL)
+                .addHeader("Authorization", "Bearer " + apiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(RequestBody.create(jsonBody, MediaType.parse("application/json")))
+                .build();
+
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    System.err.println("[OPENAI] API call failed: " + response.code());
+                    return "";
+                }
+
+                String responseBody = response.body().string();
+                JsonNode root = objectMapper.readTree(responseBody);
+                return root.at("/choices/0/message/content").asText();
+            }
+        } catch (IOException e) {
+            System.err.println("[OPENAI] Error calling API: " + e.getMessage());
+            return "";
+        }
+    }
+
+    /**
+     * Build prompt for path generation
+     */
+    private String buildPathPrompt(String roleName, List<Map<String, Object>> availableSkills) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("You are a career learning advisor. Generate a personalized 12-week learning path for the role: ")
+              .append(roleName).append("\n\n");
+        prompt.append("Available skills:\n");
+
+        for (Map<String, Object> skill : availableSkills) {
+            prompt.append("- ID: ").append(skill.get("id"))
+                  .append(", Name: ").append(skill.get("name"))
+                  .append(", Difficulty: ").append(skill.get("difficulty"))
+                  .append("\n");
+        }
+
+        prompt.append("\nReturn ONLY a JSON array of skill IDs in recommended learning order (prerequisites first), like: [1, 3, 5, 7, ...]\n");
+        prompt.append("Aim for 8-15 skills total. Consider:\n");
+        prompt.append("1. Logical progression (basics → intermediate → advanced)\n");
+        prompt.append("2. Practical utility for the role\n");
+        prompt.append("3. Industry demand\n");
+        prompt.append("4. Prerequisite dependencies\n\n");
+        prompt.append("Output format: [skill_id_1, skill_id_2, skill_id_3, ...]");
+
+        return prompt.toString();
+    }
+
+    /**
+     * Build prompt for quiz generation
+     */
+    private String buildQuizPrompt(String skillName, String difficulty, int numQuestions) {
+        return String.format("""
+            Generate %d practical assessment questions for the skill: %s (Difficulty: %s)
+
+            Requirements:
+            - Mix of question types: multiple choice (70%%), true/false (15%%), code completion (15%%)
+            - Real-world scenarios, not just definitions
+            - Clear, unambiguous questions
+            - Exactly 4 options for multiple choice (A, B, C, D)
+            - One correct answer per question
+
+            Return ONLY valid JSON in this exact format:
+            {
+              "questions": [
+                {
+                  "type": "multiple_choice",
+                  "question": "What is...",
+                  "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"],
+                  "correctAnswer": "B",
+                  "explanation": "Brief explanation of why B is correct"
+                },
+                {
+                  "type": "true_false",
+                  "question": "Statement to evaluate",
+                  "correctAnswer": "true",
+                  "explanation": "Why this is true"
+                }
+              ]
+            }
+            """, numQuestions, skillName, difficulty);
+    }
+
+    /**
+     * Build prompt for answer explanation
+     */
+    private String buildExplanationPrompt(String question, String correctAnswer, String userAnswer, String skillName) {
+        return String.format("""
+            Explain why the user got this question wrong:
+
+            Skill: %s
+            Question: %s
+            User's Answer: %s
+            Correct Answer: %s
+
+            Provide:
+            1. Why the user's answer is incorrect (be specific)
+            2. Why the correct answer is right
+            3. A practical tip to remember this concept
+
+            Keep it concise (2-3 sentences max).
+            """, skillName, question, userAnswer, correctAnswer);
+    }
+
+    /**
+     * Parse skill IDs from OpenAI response
+     */
+    private List<Integer> parseSkillIdsFromResponse(String response, List<Map<String, Object>> availableSkills) {
+        List<Integer> skillIds = new ArrayList<>();
+
+        try {
+            // Extract JSON array from response (handles markdown code blocks)
+            String jsonStr = response.trim();
+            if (jsonStr.startsWith("```")) {
+                jsonStr = jsonStr.replaceAll("```json|```", "").trim();
+            }
+
+            JsonNode root = objectMapper.readTree(jsonStr);
+            if (root.isArray()) {
+                for (JsonNode node : root) {
+                    skillIds.add(node.asInt());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[OPENAI] Failed to parse skill IDs, using fallback: " + e.getMessage());
+            // Fallback: return first 10 skills sorted by difficulty
+            availableSkills.stream()
+                .sorted((a, b) -> Integer.compare((Integer)a.get("difficulty"), (Integer)b.get("difficulty")))
+                .limit(10)
+                .forEach(skill -> skillIds.add((Integer)skill.get("id")));
+        }
+
+        return skillIds;
+    }
+
+    /**
+     * Parse questions from OpenAI quiz response
+     */
+    private List<Map<String, Object>> parseQuestions(JsonNode root) {
+        List<Map<String, Object>> questions = new ArrayList<>();
+
+        JsonNode questionsNode = root.get("questions");
+        if (questionsNode != null && questionsNode.isArray()) {
+            for (JsonNode qNode : questionsNode) {
+                Map<String, Object> question = new HashMap<>();
+                question.put("type", qNode.get("type").asText());
+                question.put("question", qNode.get("question").asText());
+                question.put("correctAnswer", qNode.get("correctAnswer").asText());
+                question.put("explanation", qNode.get("explanation").asText());
+
+                if (qNode.has("options")) {
+                    List<String> options = new ArrayList<>();
+                    for (JsonNode option : qNode.get("options")) {
+                        options.add(option.asText());
+                    }
+                    question.put("options", options);
+                }
+
+                questions.add(question);
+            }
+        }
+
+        return questions;
+    }
+
+    /**
+     * Generate fallback quiz if OpenAI fails
+     */
+    private Map<String, Object> generateFallbackQuiz(String skillName, int numQuestions) {
+        Map<String, Object> quiz = new HashMap<>();
+        quiz.put("skillName", skillName);
+
+        List<Map<String, Object>> questions = new ArrayList<>();
+        for (int i = 0; i < numQuestions; i++) {
+            Map<String, Object> question = new HashMap<>();
+            question.put("type", "multiple_choice");
+            question.put("question", String.format("Question %d about %s (placeholder)", i + 1, skillName));
+            question.put("options", List.of("A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"));
+            question.put("correctAnswer", "A");
+            question.put("explanation", "This is a placeholder question. The AI service is unavailable.");
+            questions.add(question);
+        }
+
+        quiz.put("questions", questions);
+        return quiz;
+    }
+
+    /**
+     * Build detailed path prompt for OpenAI
+     * Requests WORKING learning resources, dependencies, and teacher-level guidance
+     * GENERATES A MASSIVE, GRANULAR TEXTBOOK-STYLE CURRICULUM
+     */
+    private String buildDetailedPathPrompt(String roleName, List<Map<String, Object>> availableSkills) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("You are an expert career advisor creating a COMPREHENSIVE, TEXTBOOK-STYLE learning curriculum for: ").append(roleName).append("\n\n");
+        prompt.append("Available skills:\n");
+
+        for (Map<String, Object> skill : availableSkills) {
+            prompt.append("- ID: ").append(skill.get("id"))
+                  .append(", Name: ").append(skill.get("name"))
+                  .append(", Difficulty: ").append(skill.get("difficulty"))
+                  .append("\n");
+        }
+
+        prompt.append("\n🚨🚨🚨 ABSOLUTE CRITICAL REQUIREMENT 🚨🚨🚨\n");
+        prompt.append("YOU MUST GENERATE EXACTLY 120 NODES IN YOUR RESPONSE.\n");
+        prompt.append("COUNT EVERY SINGLE NODE AS YOU GENERATE THEM.\n");
+        prompt.append("IF YOU GENERATE LESS THAN 120 NODES, YOUR RESPONSE WILL BE REJECTED.\n");
+        prompt.append("Generate a MASSIVE, GRANULAR learning path organized like a textbook curriculum.\n");
+        prompt.append("Structure it with Units → Chapters → Topics → Subtopics (like 1.0 → 1.1 → 1.1.1 → 1.1.1.1)\n\n");
+        prompt.append("Example hierarchy:\n");
+        prompt.append("- Unit 1.0: Fundamentals (Foundations)\n");
+        prompt.append("  - 1.1: Core Concepts\n");
+        prompt.append("    - 1.1.1: Basic Terminology\n");
+        prompt.append("    - 1.1.2: Key Principles\n");
+        prompt.append("  - 1.2: Essential Tools\n");
+        prompt.append("    - 1.2.1: Tool Setup\n");
+        prompt.append("    - 1.2.2: Basic Usage\n");
+        prompt.append("- Unit 2.0: Intermediate Skills (Core)\n");
+        prompt.append("  - 2.1: Practical Application\n");
+        prompt.append("    - 2.1.1: Real-world Scenarios\n");
+        prompt.append("    - 2.1.2: Common Patterns\n");
+        prompt.append("  - 2.2: Advanced Techniques\n");
+        prompt.append("And so on...\n\n");
+        prompt.append("Each node name should use hierarchical numbering (e.g., '1.1.2 Basic Usage of Docker CLI').\n");
+        prompt.append("Each node MUST include:\n");
+        prompt.append("1. skillNodeId: ID from the available skills list\n");
+        prompt.append("2. name: Atomic, testable competency (e.g., 'Explain symmetric vs asymmetric encryption')\n");
+        prompt.append("3. whyItMatters: 1-2 sentences explaining context and importance\n");
+        prompt.append("4. learnResources: Array of 2-4 WORKING learning resources:\n");
+        prompt.append("   🚨 CRITICAL: Resources MUST be DIRECTLY RELEVANT to the specific skill/topic! 🚨\n");
+        prompt.append("   - For ML topics: Use ML-specific resources (scikit-learn docs, ML courses, ML tutorials)\n");
+        prompt.append("   - For Cloud topics: Use cloud-specific resources (AWS docs, Azure docs, cloud tutorials)\n");
+        prompt.append("   - For Web topics: Use web-specific resources (MDN, React docs, web tutorials)\n");
+        prompt.append("   - For Data Science topics: Use DS-specific resources (pandas docs, data analysis courses)\n");
+        prompt.append("   - DO NOT use TypeScript resources for ML nodes, or ML resources for web nodes!\n");
+        prompt.append("   - type: 'article', 'video', 'course', or 'documentation'\n");
+        prompt.append("   - title: Clear, descriptive title MATCHING the skill topic\n");
+        prompt.append("   - url: ACTUAL WORKING URL directly related to THIS specific skill\n");
+        prompt.append("   - description: What the resource covers (must match skill domain)\n");
+        prompt.append("   - estimatedMinutes: How long it takes\n");
+        prompt.append("5. assessmentType: 'probe', 'build', 'prove', or 'apply'\n");
+        prompt.append("6. proofRequirement: What user must demonstrate to complete\n");
+        prompt.append("7. dependencies: Array of skill IDs that must be completed first (use [] if none)\n");
+        prompt.append("8. unlocks: Array of skill IDs unlocked after completing this (use [] if none)\n");
+        prompt.append("9. difficulty: 1-10\n");
+        prompt.append("10. estimatedHours: 1-20\n");
+        prompt.append("11. category: 'foundational', 'core', 'advanced', or 'specialized'\n\n");
+        prompt.append("🚨 REQUIREMENTS - COUNT TO 120 NODES: 🚨\n");
+        prompt.append("1. Generate EXACTLY 120 nodes minimum\n");
+        prompt.append("2. Create 10 major units (Unit 1.0 through Unit 10.0)\n");
+        prompt.append("3. Each unit should have 12 nodes (10 units × 12 nodes = 120 total)\n");
+        prompt.append("4. Use hierarchical naming: Unit 1.0, then 1.1, 1.2, 1.3, then 1.1.1, 1.1.2, etc.\n");
+        prompt.append("5. Include ONLY real URLs (cloudflare.com/learning, mdn, official docs, youtube)\n");
+        prompt.append("6. Order nodes logically with clear dependencies\n");
+        prompt.append("7. estimatedHours should be 1-3 per node\n");
+        prompt.append("8. Each node name must be unique and specific\n");
+        prompt.append("9. Use skillNodeId sequentially: 1, 2, 3, ..., 120\n");
+        prompt.append("10. VERIFY YOU HAVE 120 NODES BEFORE RESPONDING\n\n");
+        prompt.append("Return ONLY valid JSON in this format (example with hierarchical naming):\n");
+        prompt.append("{\n");
+        prompt.append("  \"path\": [\n");
+        prompt.append("    {\n");
+        prompt.append("      \"skillNodeId\": 1,\n");
+        prompt.append("      \"name\": \"1.0 Cloud Security Fundamentals\",\n");
+        prompt.append("      \"whyItMatters\": \"Foundation for all cloud security concepts\",\n");
+        prompt.append("      \"learnResources\": [...],\n");
+        prompt.append("      \"assessmentType\": \"probe\",\n");
+        prompt.append("      \"proofRequirement\": \"Define core cloud security concepts\",\n");
+        prompt.append("      \"dependencies\": [],\n");
+        prompt.append("      \"unlocks\": [2, 3],\n");
+        prompt.append("      \"difficulty\": 2,\n");
+        prompt.append("      \"estimatedHours\": 2,\n");
+        prompt.append("      \"category\": \"foundational\"\n");
+        prompt.append("    },\n");
+        prompt.append("    {\n");
+        prompt.append("      \"skillNodeId\": 2,\n");
+        prompt.append("      \"name\": \"1.1 Understanding IAM Roles\",\n");
+        prompt.append("      \"whyItMatters\": \"Identity management is the first line of defense\",\n");
+        prompt.append("      \"learnResources\": [...],\n");
+        prompt.append("      \"assessmentType\": \"probe\",\n");
+        prompt.append("      \"proofRequirement\": \"Explain IAM roles vs policies\",\n");
+        prompt.append("      \"dependencies\": [1],\n");
+        prompt.append("      \"unlocks\": [4, 5],\n");
+        prompt.append("      \"difficulty\": 3,\n");
+        prompt.append("      \"estimatedHours\": 2,\n");
+        prompt.append("      \"category\": \"foundational\"\n");
+        prompt.append("    },\n");
+        prompt.append("    {\n");
+        prompt.append("      \"skillNodeId\": 4,\n");
+        prompt.append("      \"name\": \"1.1.1 Creating IAM Users\",\n");
+        prompt.append("      \"whyItMatters\": \"Hands-on IAM setup\",\n");
+        prompt.append("      \"learnResources\": [...],\n");
+        prompt.append("      \"assessmentType\": \"build\",\n");
+        prompt.append("      \"proofRequirement\": \"Create and configure an IAM user\",\n");
+        prompt.append("      \"dependencies\": [2],\n");
+        prompt.append("      \"unlocks\": [6],\n");
+        prompt.append("      \"difficulty\": 3,\n");
+        prompt.append("      \"estimatedHours\": 1,\n");
+        prompt.append("      \"category\": \"foundational\"\n");
+        prompt.append("    }\n");
+        prompt.append("    // ⚠️ CONTINUE with 1.1.2, 1.1.3, 1.2, 1.2.1, 1.2.2, 2.0, 2.1, 2.1.1, 2.1.2, 2.2, etc.\n");
+        prompt.append("    // Generate ALL nodes until you reach AT LEAST 100-150 total nodes\n");
+        prompt.append("    // Each major unit should have 25-35 nodes. With 5-6 units, you'll have 125-210 nodes total.\n");
+        prompt.append("    // DO NOT STOP until you've generated the full curriculum.\n");
+        prompt.append("  ]\n");
+        prompt.append("}\n");
+
+        return prompt.toString();
+    }
+
+    /**
+     * Parse detailed path nodes from OpenAI response
+     */
+    private List<DetailedPathNode> parseDetailedPathNodes(JsonNode root, List<Map<String, Object>> availableSkills) {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        JsonNode pathNode = root.get("path");
+        if (pathNode != null && pathNode.isArray()) {
+            for (JsonNode nodeJson : pathNode) {
+                DetailedPathNode node = new DetailedPathNode();
+                node.setSkillNodeId(nodeJson.get("skillNodeId").asInt());
+                node.setName(nodeJson.get("name").asText());
+                node.setWhyItMatters(nodeJson.get("whyItMatters").asText());
+                node.setAssessmentType(nodeJson.get("assessmentType").asText());
+                node.setProofRequirement(nodeJson.get("proofRequirement").asText());
+                node.setDifficulty(nodeJson.get("difficulty").asInt());
+                node.setEstimatedHours(nodeJson.get("estimatedHours").asInt());
+                node.setCategory(nodeJson.get("category").asText());
+
+                // Parse learning resources
+                List<LearningResource> resources = new ArrayList<>();
+                JsonNode resourcesNode = nodeJson.get("learnResources");
+                if (resourcesNode != null && resourcesNode.isArray()) {
+                    for (JsonNode resJson : resourcesNode) {
+                        LearningResource res = new LearningResource();
+                        res.setType(resJson.get("type").asText());
+                        res.setTitle(resJson.get("title").asText());
+                        res.setUrl(resJson.get("url").asText());
+                        res.setDescription(resJson.get("description").asText());
+                        res.setEstimatedMinutes(resJson.get("estimatedMinutes").asInt());
+                        resources.add(res);
+                    }
+                }
+                node.setLearnResources(resources);
+
+                // Parse dependencies
+                List<Integer> dependencies = new ArrayList<>();
+                JsonNode depsNode = nodeJson.get("dependencies");
+                if (depsNode != null && depsNode.isArray()) {
+                    for (JsonNode dep : depsNode) {
+                        dependencies.add(dep.asInt());
+                    }
+                }
+                node.setDependencies(dependencies);
+
+                // Parse unlocks
+                List<Integer> unlocks = new ArrayList<>();
+                JsonNode unlocksNode = nodeJson.get("unlocks");
+                if (unlocksNode != null && unlocksNode.isArray()) {
+                    for (JsonNode unlock : unlocksNode) {
+                        unlocks.add(unlock.asInt());
+                    }
+                }
+                node.setUnlocks(unlocks);
+
+                nodes.add(node);
+            }
+        }
+
+        return nodes;
+    }
+
+    /**
+     * Generate path using hardcoded templates with real competencies and branching dependencies
+     */
+    private List<DetailedPathNode> generateProgrammaticPath(String roleName, List<Map<String, Object>> availableSkills) {
+        System.out.println("[TEMPLATE] Using hardcoded template for: " + roleName);
+
+        // Route to role-specific templates - use sequential IDs directly
+        List<DetailedPathNode> template;
+        String lowerName = roleName.toLowerCase();
+
+        if (lowerName.contains("backend")) {
+            template = generateBackendEngineerPath();
+        } else if (lowerName.contains("api developer")) {
+            template = generateAPIDeveloperPath();
+        } else if (lowerName.contains("microservices")) {
+            template = generateMicroservicesArchitectPath();
+        } else if (lowerName.contains("database")) {
+            template = generateDatabaseEngineerPath();
+        } else if (lowerName.contains("frontend")) {
+            template = generateFrontendDeveloperPath();
+        } else if (lowerName.contains("security")) {
+            template = generateSecurityEngineerPath();
+        } else if (lowerName.contains("devops")) {
+            template = generateDevOpsEngineerPath();
+        } else if (lowerName.contains("site reliability") || lowerName.contains("sre")) {
+            template = generateSREPath();
+        } else if (lowerName.contains("platform engineer")) {
+            template = generatePlatformEngineerPath();
+        } else if (lowerName.contains("cloud architect")) {
+            template = generateCloudArchitectPath();
+        } else if (lowerName.contains("ios")) {
+            template = generateiOSDeveloperPath();
+        } else if (lowerName.contains("android")) {
+            template = generateAndroidDeveloperPath();
+        } else if (lowerName.contains("react native")) {
+            template = generateReactNativeDeveloperPath();
+        } else if (lowerName.contains("flutter")) {
+            template = generateFlutterDeveloperPath();
+        } else if (lowerName.contains("mobile architect")) {
+            template = generateMobileArchitectPath();
+        } else if (lowerName.contains("mobile")) {
+            template = generateMobileDeveloperPath();
+        } else if (lowerName.contains("ml") || lowerName.contains("machine learning") || lowerName.contains("data scientist") || lowerName.contains("computer vision") || lowerName.contains("nlp") || lowerName.contains("ai research")) {
+            template = generateMLEngineerPath();
+        } else {
+            // Fallback to Backend template for unknown roles
+            System.out.println("[TEMPLATE] Unknown role '" + roleName + "', using Backend template as fallback");
+            template = generateBackendEngineerPath();
+        }
+
+        System.out.println("[TEMPLATE] Generated " + template.size() + " nodes with sequential IDs 1-" + template.size());
+        return template;
+    }
+
+    /**
+     * Map template node IDs to actual database skill IDs
+     */
+    private List<DetailedPathNode> mapTemplateToActualIds(List<DetailedPathNode> template, List<Integer> actualSkillIds) {
+        // Create mapping: template ID → actual ID
+        Map<Integer, Integer> idMapping = new HashMap<>();
+        for (int i = 0; i < template.size() && i < actualSkillIds.size(); i++) {
+            int templateId = i + 1; // Template IDs are 1, 2, 3...
+            idMapping.put(templateId, actualSkillIds.get(i));
+        }
+
+        System.out.println("[TEMPLATE] ID Mapping: " + idMapping);
+
+        // Apply mapping to all nodes
+        return template.stream().map(node -> {
+            DetailedPathNode mapped = new DetailedPathNode();
+
+            // Map the node's skill ID
+            Integer actualId = idMapping.get(node.getSkillNodeId());
+            if (actualId == null) {
+                System.out.println("[TEMPLATE] WARNING: No mapping for template ID " + node.getSkillNodeId());
+                actualId = node.getSkillNodeId(); // Fallback to template ID
+            }
+            mapped.setSkillNodeId(actualId);
+
+            // Copy all other fields
+            mapped.setName(node.getName());
+            mapped.setWhyItMatters(node.getWhyItMatters());
+            mapped.setAssessmentType(node.getAssessmentType());
+            mapped.setProofRequirement(node.getProofRequirement());
+            mapped.setDifficulty(node.getDifficulty());
+            mapped.setEstimatedHours(node.getEstimatedHours());
+            mapped.setCategory(node.getCategory());
+            mapped.setLearnResources(node.getLearnResources());
+
+            // Map dependencies
+            List<Integer> mappedDeps = node.getDependencies().stream()
+                .map(depId -> idMapping.getOrDefault(depId, depId))
+                .collect(java.util.stream.Collectors.toList());
+            mapped.setDependencies(mappedDeps);
+
+            // Map unlocks
+            List<Integer> mappedUnlocks = node.getUnlocks().stream()
+                .map(unlockId -> idMapping.getOrDefault(unlockId, unlockId))
+                .collect(java.util.stream.Collectors.toList());
+            mapped.setUnlocks(mappedUnlocks);
+
+            return mapped;
+        }).collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Backend Engineer Path Template
+     * LINEAR MAIN PATH with COMPETENCIES branching out
+     */
+    private List<DetailedPathNode> generateBackendEngineerPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY BACKEND ENGINEER PATH
+        // 30 main nodes covering everything needed to start working professionally
+        // Competencies branch out as optional related skills
+
+        // === PHASE 1: WEB FUNDAMENTALS (Nodes 1-5) ===
+        nodes.add(createNode(1, "HTTP Protocol Deep Dive", "HTTP is the foundation of all web communication",
+            "probe", "Explain HTTP methods, status codes, headers, and request/response cycle", 2, 3, "foundational",
+            List.of(2), List.of(101))); // → Node 2, comp: HTTPS/TLS
+
+        nodes.add(createNode(2, "RESTful API Principles", "REST is the standard architecture for web APIs",
+            "probe", "Design RESTful endpoints following REST constraints and best practices", 3, 3, "foundational",
+            List.of(3), List.of(102))); // → Node 3, comp: GraphQL
+
+        nodes.add(createNode(3, "JSON Data Format", "JSON is the universal data interchange format",
+            "probe", "Parse and serialize JSON, handle nested structures", 2, 2, "foundational",
+            List.of(4), List.of())); // → Node 4
+
+        nodes.add(createNode(4, "API Error Handling", "Proper error handling prevents cryptic failures",
+            "build", "Implement consistent error responses with appropriate status codes", 3, 2, "foundational",
+            List.of(5), List.of(103))); // → Node 5, comp: Error tracking (Sentry)
+
+        nodes.add(createNode(5, "API Documentation with OpenAPI", "APIs are useless if developers can't use them",
+            "build", "Write OpenAPI/Swagger specs for your API", 3, 2, "foundational",
+            List.of(6), List.of(104))); // → Node 6, comp: Postman
+
+        // === PHASE 2: DATABASE FUNDAMENTALS (Nodes 6-12) ===
+        nodes.add(createNode(6, "Relational Database Concepts", "SQL databases power most applications",
+            "probe", "Explain tables, rows, columns, primary keys, and foreign keys", 2, 2, "foundational",
+            List.of(7), List.of(105))); // → Node 7, comp: NoSQL intro
+
+        nodes.add(createNode(7, "SQL Query Fundamentals", "Querying data is the most common database operation",
+            "build", "Write SELECT queries with WHERE, ORDER BY, LIMIT", 3, 3, "foundational",
+            List.of(8), List.of())); // → Node 8
+
+        nodes.add(createNode(8, "SQL Data Manipulation", "Applications need to create, update, and delete data",
+            "build", "Write INSERT, UPDATE, DELETE queries with proper transactions", 3, 3, "core",
+            List.of(9), List.of())); // → Node 9
+
+        nodes.add(createNode(9, "Database Normalization", "Normalization eliminates data redundancy and anomalies",
+            "probe", "Normalize database schema to 3NF, explain normal forms", 4, 3, "core",
+            List.of(10), List.of(106))); // → Node 10, comp: ER diagrams
+
+        nodes.add(createNode(10, "SQL Joins and Relationships", "Real applications require querying multiple tables",
+            "build", "Write INNER, LEFT, RIGHT, FULL joins to combine related data", 5, 4, "core",
+            List.of(11), List.of())); // → Node 11
+
+        nodes.add(createNode(11, "Database Constraints", "Constraints enforce data integrity at the database level",
+            "build", "Implement NOT NULL, UNIQUE, CHECK, and foreign key constraints", 4, 2, "core",
+            List.of(12), List.of())); // → Node 12
+
+        nodes.add(createNode(12, "Database Indexing Basics", "Indexes make queries orders of magnitude faster",
+            "build", "Create indexes on frequently queried columns, understand index trade-offs", 5, 3, "core",
+            List.of(13), List.of(107))); // → Node 13, comp: Index optimization
+
+        // === PHASE 3: BACKEND DEVELOPMENT (Nodes 13-20) ===
+        nodes.add(createNode(13, "Setting Up Your First API Server", "Learn to create a basic backend server",
+            "build", "Set up Express/Flask/Spring Boot server with routing", 4, 4, "core",
+            List.of(14), List.of(108, 109))); // → Node 14, comp: Node.js, Python
+
+        nodes.add(createNode(14, "CRUD Operations Implementation", "CRUD forms the backbone of most APIs",
+            "build", "Build Create, Read, Update, Delete endpoints for a resource", 5, 5, "core",
+            List.of(15), List.of())); // → Node 15
+
+        nodes.add(createNode(15, "Environment Variables and Config", "Never hardcode secrets or config",
+            "build", "Use .env files and environment-based configuration", 3, 2, "core",
+            List.of(16), List.of(110))); // → Node 16, comp: Secrets management
+
+        nodes.add(createNode(16, "Database Connection Pooling", "Efficient database connections improve performance",
+            "build", "Implement connection pooling with your database client", 4, 3, "core",
+            List.of(17), List.of())); // → Node 17
+
+        nodes.add(createNode(17, "ORM Fundamentals", "ORMs simplify database operations with objects",
+            "build", "Use Sequelize/SQLAlchemy/Hibernate to map objects to tables", 5, 4, "core",
+            List.of(18), List.of(111))); // → Node 18, comp: Raw SQL vs ORM
+
+        nodes.add(createNode(18, "Input Validation and Sanitization", "Never trust user input",
+            "build", "Validate and sanitize all API inputs to prevent injection attacks", 5, 3, "core",
+            List.of(19), List.of(112))); // → Node 19, comp: SQL injection prevention
+
+        nodes.add(createNode(19, "Middleware and Request Pipeline", "Middleware enables cross-cutting concerns",
+            "build", "Create middleware for logging, auth, and error handling", 5, 3, "core",
+            List.of(20), List.of())); // → Node 20
+
+        nodes.add(createNode(20, "API Rate Limiting", "Protect your API from abuse and DDoS",
+            "build", "Implement rate limiting per IP/user", 4, 2, "core",
+            List.of(21), List.of())); // → Node 21
+
+        // === PHASE 4: AUTHENTICATION & SECURITY (Nodes 21-25) ===
+        nodes.add(createNode(21, "Password Hashing", "Storing plain-text passwords is a security disaster",
+            "build", "Hash passwords with bcrypt/argon2 before storing", 4, 3, "core",
+            List.of(22), List.of(113))); // → Node 22, comp: Rainbow tables
+
+        nodes.add(createNode(22, "JWT Authentication", "JWTs enable stateless authentication",
+            "build", "Implement JWT-based login/logout with refresh tokens", 6, 4, "advanced",
+            List.of(23), List.of(114))); // → Node 23, comp: Session-based auth
+
+        nodes.add(createNode(23, "Role-Based Access Control", "Different users need different permissions",
+            "build", "Implement RBAC with roles and permissions", 6, 4, "advanced",
+            List.of(24), List.of(115))); // → Node 24, comp: ABAC
+
+        nodes.add(createNode(24, "API Security Headers", "Security headers protect against common attacks",
+            "build", "Implement CORS, CSP, HSTS, and other security headers", 4, 2, "advanced",
+            List.of(25), List.of(116))); // → Node 25, comp: OWASP Top 10
+
+        nodes.add(createNode(25, "OAuth 2.0 Integration", "Enable login with Google, GitHub, etc.",
+            "build", "Implement OAuth 2.0 authorization code flow", 7, 5, "advanced",
+            List.of(26), List.of())); // → Node 26
+
+        // === PHASE 5: TESTING & QUALITY (Nodes 26-28) ===
+        nodes.add(createNode(26, "Unit Testing APIs", "Tests prevent regressions and enable refactoring",
+            "build", "Write unit tests for API endpoints with Jest/Pytest", 5, 4, "advanced",
+            List.of(27), List.of(117))); // → Node 27, comp: TDD
+
+        nodes.add(createNode(27, "Integration Testing", "Integration tests verify components work together",
+            "build", "Write integration tests for database + API flows", 6, 4, "advanced",
+            List.of(28), List.of())); // → Node 28
+
+        nodes.add(createNode(28, "API Performance Testing", "Performance issues kill user experience",
+            "build", "Load test your API with Artillery/k6, identify bottlenecks", 6, 4, "advanced",
+            List.of(29), List.of(118))); // → Node 29, comp: Profiling
+
+        // === PHASE 6: PRODUCTION READINESS (Nodes 29-30) ===
+        nodes.add(createNode(29, "Logging and Monitoring", "You can't fix what you can't see",
+            "build", "Implement structured logging and monitoring with Prometheus/Datadog", 5, 4, "specialized",
+            List.of(30), List.of(119, 120))); // → Node 30, comp: ELK stack, APM
+
+        nodes.add(createNode(30, "Production Deployment", "Ship your API to the world",
+            "apply", "Deploy API to AWS/GCP/Azure with CI/CD pipeline", 8, 6, "specialized",
+            List.of(), List.of(121, 122, 123))); // Final node, comp: Docker, K8s, Blue-green deployment
+
+        // === COMPETENCY NODES (100+) - Optional branches ===
+        nodes.add(createNode(101, "HTTPS and TLS", "Secure communication with encryption",
+            "probe", "Explain SSL/TLS handshake and certificate validation", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(102, "GraphQL Basics", "Alternative to REST for flexible queries",
+            "probe", "Explain GraphQL queries, mutations, and schema", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(103, "Error Tracking with Sentry", "Catch errors in production",
+            "build", "Integrate Sentry for error tracking", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(104, "Postman Collections", "Test APIs efficiently",
+            "build", "Create Postman collections for API testing", 2, 1, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(105, "NoSQL Databases", "Document stores for flexible schemas",
+            "probe", "Explain MongoDB, Redis use cases", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(106, "ER Diagrams", "Visual database design",
+            "build", "Create entity-relationship diagrams", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(107, "Advanced Index Optimization", "Fine-tune index performance",
+            "build", "Analyze query plans and optimize indexes", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(108, "Node.js Event Loop", "Understanding async execution",
+            "probe", "Explain Node.js event loop and async patterns", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(109, "Python AsyncIO", "Async programming in Python",
+            "probe", "Explain async/await in Python", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(110, "HashiCorp Vault", "Secrets management at scale",
+            "build", "Use Vault for secret storage", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(111, "Query Builders vs ORM", "Understanding the trade-offs",
+            "probe", "Compare raw SQL, query builders, and ORMs", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(112, "SQL Injection Prevention", "Prevent the #1 web vulnerability",
+            "build", "Use parameterized queries to prevent SQLi", 5, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(113, "Rainbow Tables and Salt", "Understanding password attacks",
+            "probe", "Explain rainbow tables and why salt is critical", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(114, "Session-Based Authentication", "Traditional stateful auth",
+            "build", "Implement session-based auth with cookies", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(115, "Attribute-Based Access Control", "Advanced authorization",
+            "probe", "Explain ABAC vs RBAC", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(116, "OWASP Top 10", "Common web vulnerabilities",
+            "probe", "Explain OWASP Top 10 vulnerabilities", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(117, "Test-Driven Development", "Write tests first",
+            "build", "Practice TDD workflow: Red-Green-Refactor", 5, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(118, "Code Profiling", "Find performance bottlenecks",
+            "build", "Profile code execution to identify slow functions", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(119, "ELK Stack", "Centralized logging",
+            "build", "Set up Elasticsearch, Logstash, Kibana", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(120, "Application Performance Monitoring", "Deep performance insights",
+            "build", "Integrate APM with New Relic/DataDog", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(121, "Docker Fundamentals", "Containerize applications",
+            "build", "Create Dockerfile and run containers", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(122, "Kubernetes Basics", "Container orchestration",
+            "probe", "Explain pods, services, deployments", 8, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(123, "Blue-Green Deployment", "Zero-downtime deployments",
+            "probe", "Explain blue-green and canary deployment strategies", 6, 3, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Backend Engineer path with " + nodes.size() + " nodes (30 main + 23 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Frontend Developer Path Template
+     * ~35 nodes with branching dependencies
+     */
+    private List<DetailedPathNode> generateFrontendDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY FRONTEND DEVELOPER PATH
+        // 30 main nodes covering everything needed to start working professionally
+        // Competencies branch out as optional related skills
+
+        // === PHASE 1: HTML & CSS FOUNDATIONS (Nodes 1-7) ===
+        nodes.add(createNode(1, "HTML5 Semantic Markup", "Semantic HTML is the foundation of accessible web pages",
+            "probe", "Build a webpage using semantic HTML5 elements (header, nav, main, article, section)", 2, 2, "foundational",
+            List.of(2), List.of(201))); // → Node 2, comp: HTML forms
+
+        nodes.add(createNode(2, "CSS Fundamentals", "CSS controls the visual presentation of web pages",
+            "probe", "Style a webpage with CSS selectors, box model, and layout", 3, 3, "foundational",
+            List.of(3), List.of(202))); // → Node 3, comp: CSS animations
+
+        nodes.add(createNode(3, "CSS Flexbox Layout", "Flexbox simplifies complex layouts",
+            "build", "Create responsive layouts using Flexbox", 4, 3, "foundational",
+            List.of(4), List.of())); // → Node 4
+
+        nodes.add(createNode(4, "CSS Grid Layout", "Grid enables two-dimensional layouts",
+            "build", "Build complex grid-based layouts", 4, 3, "foundational",
+            List.of(5), List.of(203))); // → Node 5, comp: CSS Grid advanced patterns
+
+        nodes.add(createNode(5, "Responsive Web Design", "Sites must work on all devices",
+            "build", "Create mobile-first responsive design with media queries", 4, 3, "foundational",
+            List.of(6), List.of())); // → Node 6
+
+        nodes.add(createNode(6, "JavaScript Basics", "Programming language of the web",
+            "probe", "Write JS for DOM manipulation and event handling", 3, 4, "foundational",
+            List.of(7), List.of(204))); // → Node 7, comp: JS history & evolution
+
+        nodes.add(createNode(7, "ES6+ Modern JavaScript", "Modern features improve code quality",
+            "build", "Use arrow functions, destructuring, async/await, modules", 4, 4, "core",
+            List.of(8), List.of(205))); // → Node 8, comp: TypeScript intro
+
+        // === PHASE 2: JAVASCRIPT FUNDAMENTALS (Nodes 8-13) ===
+        nodes.add(createNode(8, "JavaScript Promises and Async", "Handle asynchronous operations",
+            "build", "Master Promises, async/await, error handling", 5, 4, "core",
+            List.of(9), List.of(206))); // → Node 9, comp: Event loop
+
+        nodes.add(createNode(9, "Fetch API and HTTP Requests", "Modern way to make HTTP requests",
+            "build", "Fetch data from APIs using Fetch and async/await", 4, 3, "core",
+            List.of(10), List.of())); // → Node 10
+
+        nodes.add(createNode(10, "Browser DevTools Mastery", "Debug and profile effectively",
+            "probe", "Use Chrome DevTools for debugging, profiling, and network inspection", 3, 3, "core",
+            List.of(11), List.of(207))); // → Node 11, comp: Performance profiling
+
+        nodes.add(createNode(11, "Git and Version Control", "Version control is essential for collaboration",
+            "build", "Use Git for commits, branches, merges, and pull requests", 3, 3, "core",
+            List.of(12), List.of())); // → Node 12
+
+        nodes.add(createNode(12, "npm and Package Management", "Manage dependencies efficiently",
+            "build", "Use npm to install, update, and manage packages", 3, 2, "core",
+            List.of(13), List.of())); // → Node 13
+
+        nodes.add(createNode(13, "Build Tools (Vite)", "Modern build tools speed up development",
+            "build", "Set up Vite for fast hot module replacement", 4, 3, "core",
+            List.of(14), List.of(208))); // → Node 14, comp: Webpack basics
+
+        // === PHASE 3: REACT FUNDAMENTALS (Nodes 14-20) ===
+        nodes.add(createNode(14, "React Fundamentals", "React is the most popular UI library",
+            "probe", "Build components with JSX, props, and state", 5, 5, "core",
+            List.of(15), List.of())); // → Node 15
+
+        nodes.add(createNode(15, "React Hooks", "Hooks enable state and lifecycle in function components",
+            "build", "Use useState, useEffect, useContext, and custom hooks", 6, 5, "core",
+            List.of(16), List.of(209, 210))); // → Node 16, comp: Class components, Hook patterns
+
+        nodes.add(createNode(16, "Component Composition", "Build complex UIs from small reusable pieces",
+            "build", "Design component hierarchies and prop flow patterns", 5, 3, "core",
+            List.of(17), List.of())); // → Node 17
+
+        nodes.add(createNode(17, "React Forms and Validation", "Handle user input properly",
+            "build", "Build forms with controlled components and validation", 5, 3, "core",
+            List.of(18), List.of())); // → Node 18
+
+        nodes.add(createNode(18, "React Router", "Enable client-side routing",
+            "build", "Implement multi-page navigation with React Router", 5, 3, "advanced",
+            List.of(19), List.of())); // → Node 19
+
+        nodes.add(createNode(19, "REST API Integration", "Connect frontend to backend services",
+            "build", "Integrate REST API with error handling and loading states", 5, 4, "advanced",
+            List.of(20), List.of(211))); // → Node 20, comp: GraphQL basics
+
+        nodes.add(createNode(20, "React Context API", "Share state across component tree",
+            "build", "Implement global state with Context API", 6, 4, "advanced",
+            List.of(21), List.of())); // → Node 21
+
+        // === PHASE 4: ADVANCED REACT & STATE (Nodes 21-25) ===
+        nodes.add(createNode(21, "State Management (Redux/Zustand)", "Manage complex application state",
+            "build", "Implement state management with Redux or Zustand", 7, 6, "advanced",
+            List.of(22), List.of(212))); // → Node 22, comp: Redux Toolkit
+
+        nodes.add(createNode(22, "React Performance Optimization", "Optimize rendering for better UX",
+            "build", "Use React.memo, useMemo, useCallback, and React Profiler", 7, 4, "advanced",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "React Suspense and Error Boundaries", "Handle loading and errors gracefully",
+            "build", "Implement Suspense for data fetching and Error Boundaries", 6, 3, "advanced",
+            List.of(24), List.of())); // → Node 24
+
+        nodes.add(createNode(24, "Code Splitting and Lazy Loading", "Reduce initial bundle size",
+            "build", "Implement dynamic imports and React.lazy", 6, 3, "advanced",
+            List.of(25), List.of())); // → Node 25
+
+        nodes.add(createNode(25, "Custom Hooks", "Create reusable stateful logic",
+            "build", "Build custom hooks for common patterns", 6, 4, "advanced",
+            List.of(26), List.of(213))); // → Node 26, comp: Hook libraries
+
+        // === PHASE 5: PRODUCTION SKILLS (Nodes 26-30) ===
+        nodes.add(createNode(26, "CSS-in-JS or Tailwind", "Modern styling approaches",
+            "build", "Style React components with Tailwind CSS or styled-components", 5, 4, "specialized",
+            List.of(27), List.of(214))); // → Node 27, comp: CSS modules
+
+        nodes.add(createNode(27, "Web Accessibility (a11y)", "Make apps usable for everyone",
+            "build", "Implement ARIA, keyboard navigation, and screen reader support", 6, 4, "specialized",
+            List.of(28), List.of(215))); // → Node 28, comp: WCAG guidelines
+
+        nodes.add(createNode(28, "React Testing", "Test components effectively",
+            "build", "Write unit and integration tests with React Testing Library", 7, 5, "specialized",
+            List.of(29), List.of(216))); // → Node 29, comp: E2E with Playwright
+
+        nodes.add(createNode(29, "Web Performance Optimization", "Make apps blazingly fast",
+            "build", "Optimize Core Web Vitals (LCP, FID, CLS)", 8, 5, "specialized",
+            List.of(30), List.of(217))); // → Node 30, comp: Lighthouse
+
+        nodes.add(createNode(30, "Production Deployment", "Ship frontend to production",
+            "apply", "Deploy with Vercel/Netlify, set up CI/CD, CDN, and monitoring", 7, 6, "specialized",
+            List.of(), List.of(218, 219, 220))); // Final node, comp: PWA, Next.js, Docker
+
+        // === COMPETENCY NODES (201-220) - Optional branches ===
+        nodes.add(createNode(201, "HTML Forms Deep Dive", "Advanced form elements and validation",
+            "build", "Create accessible forms with validation", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(202, "CSS Animations and Transitions", "Smooth visual effects",
+            "build", "Create animations with CSS transitions and keyframes", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(203, "CSS Grid Advanced Patterns", "Complex grid layouts",
+            "build", "Build advanced grid layouts with auto-placement", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(204, "JavaScript History & Evolution", "Understanding JS ecosystem",
+            "probe", "Explain ES5, ES6, and modern JS evolution", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(205, "TypeScript Basics", "Type-safe JavaScript",
+            "probe", "Explain TypeScript types and interfaces", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(206, "Event Loop Deep Dive", "Understanding async execution",
+            "probe", "Explain call stack, event loop, and task queue", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(207, "Performance Profiling", "Identify performance bottlenecks",
+            "build", "Use Chrome DevTools Performance panel", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(208, "Webpack Basics", "Traditional bundler",
+            "probe", "Explain Webpack loaders and plugins", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(209, "React Class Components", "Legacy component pattern",
+            "probe", "Understand class components and lifecycle methods", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(210, "Custom Hook Patterns", "Advanced hook patterns",
+            "build", "Build hooks for data fetching, forms, and animations", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(211, "GraphQL Basics", "Alternative to REST",
+            "probe", "Explain GraphQL queries and mutations", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(212, "Redux Toolkit", "Modern Redux",
+            "build", "Use Redux Toolkit with slices and RTK Query", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(213, "React Hook Libraries", "Third-party hook libraries",
+            "probe", "Explore react-use, ahooks, and other libraries", 5, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(214, "CSS Modules", "Scoped CSS",
+            "build", "Use CSS Modules for component-scoped styles", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(215, "WCAG Guidelines", "Accessibility standards",
+            "probe", "Understand WCAG 2.1 AA compliance", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(216, "E2E Testing with Playwright", "End-to-end testing",
+            "build", "Write E2E tests with Playwright", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(217, "Lighthouse Auditing", "Automated performance audits",
+            "probe", "Run and interpret Lighthouse audits", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(218, "Progressive Web Apps (PWA)", "Native-like web apps",
+            "build", "Add service workers and offline support", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(219, "Next.js Framework", "React framework with SSR",
+            "build", "Build app with Next.js routing and SSR", 8, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(220, "Docker for Frontend", "Containerize frontend apps",
+            "build", "Create Dockerfile for React apps", 6, 4, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Frontend Developer path with " + nodes.size() + " nodes (30 main + 20 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Security Engineer Path Template
+     * 30 main nodes + ~25 competency branches - Linear progression
+     */
+    private List<DetailedPathNode> generateSecurityEngineerPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY SECURITY ENGINEER PATH
+        // 30 main nodes covering everything needed to start working professionally
+        // Competencies branch out as optional related skills
+
+        // === PHASE 1: SECURITY FOUNDATIONS (Nodes 1-6) ===
+        nodes.add(createNode(1, "Cryptography Fundamentals", "Cryptography is the foundation of security",
+            "probe", "Explain symmetric vs asymmetric encryption, hashing, and digital signatures", 3, 3, "foundational",
+            List.of(2), List.of(301))); // → Node 2, comp: PKI basics
+
+        nodes.add(createNode(2, "Network Security Basics", "Understanding network protocols is essential",
+            "probe", "Explain TCP/IP, DNS, TLS/SSL, and common network attacks", 3, 3, "foundational",
+            List.of(3), List.of(302))); // → Node 3, comp: OSI model
+
+        nodes.add(createNode(3, "Operating System Security", "OS security controls access to resources",
+            "probe", "Explain user permissions, file systems, and process isolation", 3, 3, "foundational",
+            List.of(4), List.of())); // → Node 4
+
+        nodes.add(createNode(4, "Linux Security Hardening", "Linux is the backbone of server infrastructure",
+            "build", "Harden Linux system with SELinux, AppArmor, and secure configs", 5, 4, "foundational",
+            List.of(5), List.of(303))); // → Node 5, comp: Windows hardening
+
+        nodes.add(createNode(5, "Secure Network Architecture", "Design networks with security in mind",
+            "probe", "Design network segmentation, VPNs, and firewalls", 4, 3, "core",
+            List.of(6), List.of(304))); // → Node 6, comp: Zero trust
+
+        nodes.add(createNode(6, "Security Logging and Monitoring", "You can't detect what you don't log",
+            "build", "Set up centralized logging and monitoring with syslog", 4, 3, "core",
+            List.of(7), List.of())); // → Node 7
+
+        // === PHASE 2: WEB APPLICATION SECURITY (Nodes 7-13) ===
+        nodes.add(createNode(7, "OWASP Top 10", "Most common web vulnerabilities",
+            "probe", "Explain all OWASP Top 10 vulnerabilities and countermeasures", 4, 4, "core",
+            List.of(8), List.of(305))); // → Node 8, comp: OWASP ASVS
+
+        nodes.add(createNode(8, "SQL Injection Prevention", "SQLi is one of the most critical vulnerabilities",
+            "build", "Prevent SQL injection with parameterized queries and ORMs", 5, 3, "core",
+            List.of(9), List.of())); // → Node 9
+
+        nodes.add(createNode(9, "Cross-Site Scripting (XSS) Prevention", "XSS enables code injection in browsers",
+            "build", "Prevent XSS with input sanitization and CSP", 5, 3, "core",
+            List.of(10), List.of(306))); // → Node 10, comp: CSP deep dive
+
+        nodes.add(createNode(10, "CSRF and Session Management", "Sessions must be managed securely",
+            "build", "Prevent CSRF with tokens and secure session storage", 5, 3, "core",
+            List.of(11), List.of())); // → Node 11
+
+        nodes.add(createNode(11, "Authentication Security", "Weak authentication leads to breaches",
+            "build", "Implement MFA, password policies, and rate limiting", 5, 4, "core",
+            List.of(12), List.of(307))); // → Node 12, comp: Passwordless auth
+
+        nodes.add(createNode(12, "OAuth 2.0 and OpenID Connect", "Modern authentication protocols",
+            "build", "Implement OAuth 2.0 flows and OpenID Connect", 6, 5, "advanced",
+            List.of(13), List.of(308))); // → Node 13, comp: SAML
+
+        nodes.add(createNode(13, "API Security Best Practices", "APIs need dedicated security measures",
+            "build", "Secure APIs with rate limiting, JWT validation, and CORS", 6, 4, "advanced",
+            List.of(14), List.of(309))); // → Node 14, comp: API gateways
+
+        // === PHASE 3: OFFENSIVE SECURITY (Nodes 14-20) ===
+        nodes.add(createNode(14, "Reconnaissance and OSINT", "Information gathering is the first step",
+            "build", "Perform OSINT with Google dorks, Shodan, and DNS enumeration", 5, 4, "advanced",
+            List.of(15), List.of(310))); // → Node 15, comp: Social engineering
+
+        nodes.add(createNode(15, "Vulnerability Scanning", "Automate vulnerability discovery",
+            "build", "Use Nessus, OpenVAS, and Nmap for vulnerability scanning", 6, 4, "advanced",
+            List.of(16), List.of())); // → Node 16
+
+        nodes.add(createNode(16, "Web Application Scanning", "Automated web app security testing",
+            "build", "Scan web apps with Burp Suite, OWASP ZAP", 6, 4, "advanced",
+            List.of(17), List.of(311))); // → Node 17, comp: Nuclei
+
+        nodes.add(createNode(17, "Manual Penetration Testing", "Manual testing finds what scanners miss",
+            "build", "Perform manual pentest with Burp Suite", 7, 5, "advanced",
+            List.of(18), List.of())); // → Node 18
+
+        nodes.add(createNode(18, "Exploitation Fundamentals", "Understanding how exploits work",
+            "build", "Exploit common vulnerabilities (file upload, XXE, SSRF)", 7, 5, "advanced",
+            List.of(19), List.of(312, 313))); // → Node 19, comp: Metasploit, Buffer overflow
+
+        nodes.add(createNode(19, "Privilege Escalation", "Escalate from low to high privileges",
+            "build", "Perform Linux and Windows privilege escalation", 8, 5, "advanced",
+            List.of(20), List.of())); // → Node 20
+
+        nodes.add(createNode(20, "Post-Exploitation", "What to do after gaining access",
+            "build", "Perform lateral movement, persistence, and data exfiltration", 8, 5, "specialized",
+            List.of(21), List.of(314))); // → Node 21, comp: C2 frameworks
+
+        // === PHASE 4: DEFENSIVE SECURITY (Nodes 21-26) ===
+        nodes.add(createNode(21, "Intrusion Detection Systems", "Detect attacks before they succeed",
+            "build", "Configure IDS/IPS with Snort or Suricata", 6, 4, "specialized",
+            List.of(22), List.of())); // → Node 22
+
+        nodes.add(createNode(22, "Security Information and Event Management", "SIEM aggregates security logs",
+            "build", "Configure SIEM with Splunk or ELK stack", 7, 5, "specialized",
+            List.of(23), List.of(315))); // → Node 23, comp: SOAR
+
+        nodes.add(createNode(23, "Threat Hunting", "Proactively search for threats",
+            "build", "Perform threat hunting with logs and behavioral analysis", 7, 5, "specialized",
+            List.of(24), List.of())); // → Node 24
+
+        nodes.add(createNode(24, "Threat Intelligence", "Use threat intel to defend proactively",
+            "build", "Integrate threat feeds and analyze IOCs", 7, 5, "specialized",
+            List.of(25), List.of(316))); // → Node 25, comp: MITRE ATT&CK
+
+        nodes.add(createNode(25, "Incident Response", "Respond to breaches effectively",
+            "apply", "Execute incident response plan with forensics and remediation", 8, 6, "specialized",
+            List.of(26), List.of(317))); // → Node 26, comp: NIST IR framework
+
+        nodes.add(createNode(26, "Digital Forensics", "Collect and analyze evidence",
+            "build", "Perform disk forensics and memory analysis", 8, 5, "specialized",
+            List.of(27), List.of(318))); // → Node 27, comp: Chain of custody
+
+        // === PHASE 5: CLOUD & CONTAINER SECURITY (Nodes 27-30) ===
+        nodes.add(createNode(27, "Cloud Security (AWS/Azure)", "Cloud requires different security approach",
+            "build", "Secure cloud infrastructure with IAM, security groups, and encryption", 8, 6, "specialized",
+            List.of(28), List.of(319))); // → Node 28, comp: GCP security
+
+        nodes.add(createNode(28, "Container Security", "Containers introduce new security challenges",
+            "build", "Secure Docker containers with image scanning and runtime policies", 7, 5, "specialized",
+            List.of(29), List.of(320))); // → Node 29, comp: Container escapes
+
+        nodes.add(createNode(29, "Kubernetes Security", "K8s has complex security model",
+            "build", "Secure K8s with RBAC, network policies, and pod security", 8, 6, "specialized",
+            List.of(30), List.of(321))); // → Node 30, comp: Service mesh security
+
+        nodes.add(createNode(30, "Security Compliance and Governance", "Meet regulatory requirements",
+            "apply", "Implement controls for SOC 2, ISO 27001, and build security program", 8, 6, "specialized",
+            List.of(), List.of(322, 323, 324))); // Final node, comp: GDPR, PCI DSS, Security metrics
+
+        // === COMPETENCY NODES (301-324) - Optional branches ===
+        nodes.add(createNode(301, "PKI and Certificate Management", "Public key infrastructure",
+            "build", "Generate certificates and manage CA infrastructure", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(302, "OSI Model Deep Dive", "Understanding network layers",
+            "probe", "Explain all 7 OSI layers with protocols", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(303, "Windows Security Hardening", "Secure Windows servers",
+            "build", "Harden Windows with Group Policy and AppLocker", 5, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(304, "Zero Trust Architecture", "Never trust, always verify",
+            "probe", "Design zero trust network with micro-segmentation", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(305, "OWASP ASVS", "Application Security Verification Standard",
+            "probe", "Explain OWASP ASVS levels and requirements", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(306, "Content Security Policy Deep Dive", "Advanced CSP",
+            "build", "Implement strict CSP with nonces and hashes", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(307, "Passwordless Authentication", "Modern auth without passwords",
+            "probe", "Explain WebAuthn and FIDO2", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(308, "SAML Authentication", "Enterprise SSO protocol",
+            "probe", "Explain SAML assertions and flows", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(309, "API Gateways", "Centralized API security",
+            "build", "Configure API gateway with Kong or AWS API Gateway", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(310, "Social Engineering", "Human factor in security",
+            "probe", "Explain phishing, pretexting, and defense techniques", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(311, "Nuclei Scanner", "Fast vulnerability scanner",
+            "build", "Write custom Nuclei templates", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(312, "Metasploit Framework", "Exploitation framework",
+            "build", "Use Metasploit for exploitation and post-exploitation", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(313, "Buffer Overflow Exploitation", "Memory corruption",
+            "build", "Exploit buffer overflow and bypass DEP/ASLR", 9, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(314, "C2 Frameworks", "Command and control",
+            "probe", "Explain Cobalt Strike, Empire, and detection", 8, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(315, "SOAR Platforms", "Security orchestration and automation",
+            "build", "Build SOAR workflows for automated response", 8, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(316, "MITRE ATT&CK Framework", "Adversary tactics and techniques",
+            "probe", "Map attacks to MITRE ATT&CK framework", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(317, "NIST Incident Response Framework", "Structured IR process",
+            "probe", "Explain NIST IR phases: Preparation, Detection, Containment, Eradication, Recovery", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(318, "Chain of Custody", "Legal evidence handling",
+            "probe", "Explain chain of custody for digital evidence", 5, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(319, "GCP Security", "Google Cloud security",
+            "build", "Secure GCP with IAM, VPC, and Cloud Armor", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(320, "Container Escape Techniques", "Breaking out of containers",
+            "probe", "Explain container escape vectors and mitigations", 8, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(321, "Service Mesh Security", "Secure microservices communication",
+            "build", "Implement mTLS with Istio or Linkerd", 8, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(322, "GDPR Compliance", "EU data protection regulation",
+            "probe", "Implement GDPR controls for data privacy", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(323, "PCI DSS Compliance", "Payment card security",
+            "probe", "Implement PCI DSS controls for payment processing", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(324, "Security Metrics and KPIs", "Measure security effectiveness",
+            "probe", "Define security metrics like MTTD, MTTR, vulnerability density", 6, 3, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Security Engineer path with " + nodes.size() + " nodes (30 main + 24 competencies)");
+        return nodes;
+    }
+
+    /**
+     * API Developer Path Template
+     * 30 main nodes + ~20 competency branches - Linear progression
+     */
+    private List<DetailedPathNode> generateAPIDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY API DEVELOPER PATH
+        // 30 main nodes covering API design, documentation, versioning, testing
+        // Competencies branch out as optional related skills
+
+        // === PHASE 1: API FOUNDATIONS (Nodes 1-6) ===
+        nodes.add(createNode(1, "RESTful API Design Principles", "REST is the foundation of modern APIs",
+            "probe", "Design RESTful API following REST constraints and best practices", 3, 3, "foundational",
+            List.of(2), List.of(401))); // → Node 2, comp: Richardson Maturity Model
+
+        nodes.add(createNode(2, "HTTP Methods and Status Codes", "Proper HTTP usage is critical",
+            "probe", "Explain all HTTP methods and when to use 200, 201, 400, 404, 500, etc.", 2, 2, "foundational",
+            List.of(3), List.of())); // → Node 3
+
+        nodes.add(createNode(3, "JSON and Data Serialization", "APIs exchange data in standard formats",
+            "build", "Design JSON schemas and handle serialization/deserialization", 2, 2, "foundational",
+            List.of(4), List.of(402))); // → Node 4, comp: XML, Protocol Buffers
+
+        nodes.add(createNode(4, "API Request/Response Design", "Well-designed requests make APIs usable",
+            "build", "Design request/response contracts with proper validation", 3, 3, "foundational",
+            List.of(5), List.of())); // → Node 5
+
+        nodes.add(createNode(5, "Error Handling and Status Codes", "Errors must be clear and actionable",
+            "build", "Implement consistent error responses with problem details RFC", 4, 3, "core",
+            List.of(6), List.of(403))); // → Node 6, comp: Problem Details RFC 7807
+
+        nodes.add(createNode(6, "API Documentation with OpenAPI", "Documentation is as important as code",
+            "build", "Write comprehensive OpenAPI 3.0 specifications", 4, 4, "core",
+            List.of(7), List.of(404))); // → Node 7, comp: Swagger UI
+
+        // === PHASE 2: API IMPLEMENTATION (Nodes 7-13) ===
+        nodes.add(createNode(7, "Building Your First API", "Get hands-on with API development",
+            "build", "Build complete REST API with Express/Flask/Spring Boot", 4, 5, "core",
+            List.of(8), List.of())); // → Node 8
+
+        nodes.add(createNode(8, "Input Validation and Sanitization", "Never trust client input",
+            "build", "Implement validation with JSON Schema or validation libraries", 4, 3, "core",
+            List.of(9), List.of())); // → Node 9
+
+        nodes.add(createNode(9, "API Rate Limiting", "Protect APIs from abuse",
+            "build", "Implement rate limiting per client/IP with sliding windows", 5, 3, "core",
+            List.of(10), List.of(405))); // → Node 10, comp: Token bucket algorithm
+
+        nodes.add(createNode(10, "Pagination and Filtering", "Handle large datasets efficiently",
+            "build", "Implement cursor-based pagination and filtering", 5, 4, "core",
+            List.of(11), List.of())); // → Node 11
+
+        nodes.add(createNode(11, "API Versioning Strategies", "Evolve APIs without breaking clients",
+            "build", "Implement versioning with URL, header, or content negotiation", 5, 4, "advanced",
+            List.of(12), List.of(406))); // → Node 12, comp: Semantic versioning
+
+        nodes.add(createNode(12, "Content Negotiation", "Support multiple formats",
+            "build", "Implement content negotiation for JSON, XML, CSV", 4, 3, "advanced",
+            List.of(13), List.of())); // → Node 13
+
+        nodes.add(createNode(13, "HATEOAS and Hypermedia", "Self-describing APIs",
+            "build", "Implement HATEOAS with links and resource navigation", 6, 4, "advanced",
+            List.of(14), List.of())); // → Node 14
+
+        // === PHASE 3: API SECURITY (Nodes 14-19) ===
+        nodes.add(createNode(14, "API Authentication", "Secure API access",
+            "build", "Implement API key, OAuth 2.0, and JWT authentication", 5, 4, "advanced",
+            List.of(15), List.of(407))); // → Node 15, comp: mTLS
+
+        nodes.add(createNode(15, "OAuth 2.0 Flows", "Modern authorization standard",
+            "build", "Implement authorization code, client credentials, and PKCE flows", 6, 5, "advanced",
+            List.of(16), List.of())); // → Node 16
+
+        nodes.add(createNode(16, "API Security Best Practices", "Comprehensive API security",
+            "build", "Implement CORS, CSP, rate limiting, input validation", 6, 4, "advanced",
+            List.of(17), List.of(408))); // → Node 17, comp: OWASP API Security Top 10
+
+        nodes.add(createNode(17, "API Key Management", "Secure credential handling",
+            "build", "Implement API key rotation, expiration, and secure storage", 5, 3, "advanced",
+            List.of(18), List.of())); // → Node 18
+
+        nodes.add(createNode(18, "Throttling and Quotas", "Manage API usage",
+            "build", "Implement usage quotas and throttling policies", 5, 3, "advanced",
+            List.of(19), List.of())); // → Node 19
+
+        nodes.add(createNode(19, "API Gateway Patterns", "Centralized API management",
+            "build", "Configure API gateway with Kong or AWS API Gateway", 6, 5, "specialized",
+            List.of(20), List.of(409))); // → Node 20, comp: Service mesh
+
+        // === PHASE 4: TESTING & QUALITY (Nodes 20-25) ===
+        nodes.add(createNode(20, "API Testing Fundamentals", "Test APIs thoroughly",
+            "build", "Write unit and integration tests for API endpoints", 5, 4, "specialized",
+            List.of(21), List.of())); // → Node 21
+
+        nodes.add(createNode(21, "Contract Testing", "Ensure API contracts are honored",
+            "build", "Implement contract testing with Pact or Spring Cloud Contract", 6, 4, "specialized",
+            List.of(22), List.of(410))); // → Node 22, comp: OpenAPI validation
+
+        nodes.add(createNode(22, "API Performance Testing", "Load test your APIs",
+            "build", "Load test with k6 or Artillery, identify bottlenecks", 6, 4, "specialized",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "API Monitoring and Observability", "Monitor API health",
+            "build", "Implement metrics, logs, and traces with Prometheus/Grafana", 6, 5, "specialized",
+            List.of(24), List.of(411))); // → Node 24, comp: OpenTelemetry
+
+        nodes.add(createNode(24, "API Error Tracking", "Track and fix production errors",
+            "build", "Integrate Sentry or Rollbar for error tracking", 4, 3, "specialized",
+            List.of(25), List.of())); // → Node 25
+
+        nodes.add(createNode(25, "API Documentation Tools", "Generate beautiful docs",
+            "build", "Use Swagger UI, ReDoc, and Stoplight for documentation", 4, 3, "specialized",
+            List.of(26), List.of(412))); // → Node 26, comp: Postman collections
+
+        // === PHASE 5: ADVANCED TOPICS (Nodes 26-30) ===
+        nodes.add(createNode(26, "GraphQL APIs", "Alternative to REST",
+            "build", "Build GraphQL API with schema, resolvers, and queries", 7, 6, "specialized",
+            List.of(27), List.of(413))); // → Node 27, comp: GraphQL Federation
+
+        nodes.add(createNode(27, "Real-time APIs with WebSockets", "Build real-time features",
+            "build", "Implement WebSocket API for live updates", 7, 5, "specialized",
+            List.of(28), List.of())); // → Node 28
+
+        nodes.add(createNode(28, "gRPC and Protocol Buffers", "High-performance RPC",
+            "build", "Build gRPC service with Protocol Buffers", 8, 6, "specialized",
+            List.of(29), List.of())); // → Node 29
+
+        nodes.add(createNode(29, "API Caching Strategies", "Improve performance with caching",
+            "build", "Implement caching with Redis, ETags, and Cache-Control", 6, 4, "specialized",
+            List.of(30), List.of(414))); // → Node 30, comp: CDN caching
+
+        nodes.add(createNode(30, "API Deployment and CI/CD", "Ship APIs to production",
+            "apply", "Deploy API with Docker, K8s, CI/CD pipeline, and blue-green deployment", 7, 6, "specialized",
+            List.of(), List.of(415, 416))); // Final node, comp: Canary deployment, Feature flags
+
+        // === COMPETENCY NODES (401-416) - Optional branches ===
+        nodes.add(createNode(401, "Richardson Maturity Model", "API maturity levels",
+            "probe", "Explain Level 0-3 of Richardson Maturity Model", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(402, "XML and Protocol Buffers", "Alternative data formats",
+            "probe", "Compare JSON, XML, and Protocol Buffers", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(403, "Problem Details RFC 7807", "Standard error format",
+            "probe", "Explain RFC 7807 Problem Details format", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(404, "Swagger UI and ReDoc", "Interactive documentation",
+            "build", "Set up Swagger UI and ReDoc for API docs", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(405, "Token Bucket Algorithm", "Rate limiting algorithm",
+            "probe", "Explain token bucket and leaky bucket algorithms", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(406, "Semantic Versioning", "Versioning best practices",
+            "probe", "Explain SemVer and API versioning strategies", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(407, "Mutual TLS (mTLS)", "Certificate-based auth",
+            "build", "Implement mTLS for service-to-service auth", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(408, "OWASP API Security Top 10", "Common API vulnerabilities",
+            "probe", "Explain OWASP API Security Top 10", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(409, "Service Mesh", "Advanced API infrastructure",
+            "probe", "Explain Istio and service mesh patterns", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(410, "OpenAPI Schema Validation", "Validate requests against schema",
+            "build", "Implement OpenAPI schema validation", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(411, "OpenTelemetry", "Observability standard",
+            "build", "Implement OpenTelemetry for traces and metrics", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(412, "Postman Collections", "API testing and docs",
+            "build", "Create Postman collections for API testing", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(413, "GraphQL Federation", "Distributed GraphQL",
+            "probe", "Explain GraphQL Federation and schema stitching", 8, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(414, "CDN Caching", "Edge caching for APIs",
+            "build", "Configure CDN caching with CloudFront or Cloudflare", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(415, "Canary Deployment", "Gradual rollout strategy",
+            "probe", "Explain canary deployment for APIs", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(416, "Feature Flags", "Toggle features dynamically",
+            "build", "Implement feature flags with LaunchDarkly", 5, 3, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated API Developer path with " + nodes.size() + " nodes (30 main + 16 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Microservices Architect Path Template
+     * 30 main nodes + ~20 competency branches - Linear progression
+     */
+    private List<DetailedPathNode> generateMicroservicesArchitectPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY MICROSERVICES ARCHITECT PATH
+        // 30 main nodes covering microservices architecture, patterns, and operations
+
+        // === PHASE 1: FOUNDATIONS (Nodes 1-5) ===
+        nodes.add(createNode(1, "Monolith vs Microservices", "Understanding architectural trade-offs",
+            "probe", "Compare monolithic and microservices architectures with pros/cons", 3, 3, "foundational",
+            List.of(2), List.of(501))); // → Node 2, comp: SOA
+
+        nodes.add(createNode(2, "Domain-Driven Design Basics", "DDD is essential for microservices boundaries",
+            "probe", "Explain bounded contexts, aggregates, and ubiquitous language", 4, 4, "foundational",
+            List.of(3), List.of(502))); // → Node 3, comp: Event storming
+
+        nodes.add(createNode(3, "Service Decomposition Strategies", "How to split a monolith",
+            "build", "Decompose application by business capability and subdomain", 5, 4, "core",
+            List.of(4), List.of())); // → Node 4
+
+        nodes.add(createNode(4, "RESTful Microservices", "HTTP-based service communication",
+            "build", "Build RESTful microservices with proper API design", 4, 4, "core",
+            List.of(5), List.of(503))); // → Node 5, comp: GraphQL for microservices
+
+        nodes.add(createNode(5, "Inter-Service Communication Patterns", "Services must communicate reliably",
+            "probe", "Compare sync (REST, gRPC) vs async (message queues) communication", 5, 4, "core",
+            List.of(6), List.of())); // → Node 6
+
+        // === PHASE 2: COMMUNICATION & INTEGRATION (Nodes 6-11) ===
+        nodes.add(createNode(6, "API Gateway Pattern", "Single entry point for clients",
+            "build", "Implement API gateway with routing, auth, and rate limiting", 6, 5, "core",
+            List.of(7), List.of(504))); // → Node 7, comp: BFF pattern
+
+        nodes.add(createNode(7, "Service Discovery", "Services must find each other dynamically",
+            "build", "Implement service discovery with Consul or Eureka", 6, 4, "advanced",
+            List.of(8), List.of())); // → Node 8
+
+        nodes.add(createNode(8, "Message Queues and Event Streaming", "Asynchronous communication",
+            "build", "Implement message queues with RabbitMQ or Kafka", 6, 5, "advanced",
+            List.of(9), List.of(505))); // → Node 9, comp: Event-driven architecture
+
+        nodes.add(createNode(9, "Event-Driven Architecture", "Events as first-class citizens",
+            "build", "Design event-driven microservices with event sourcing", 7, 6, "advanced",
+            List.of(10), List.of(506))); // → Node 10, comp: CQRS
+
+        nodes.add(createNode(10, "Saga Pattern", "Distributed transactions across services",
+            "build", "Implement saga pattern with choreography or orchestration", 7, 5, "advanced",
+            List.of(11), List.of())); // → Node 11
+
+        nodes.add(createNode(11, "gRPC for Microservices", "High-performance RPC",
+            "build", "Build gRPC services with Protocol Buffers", 7, 5, "advanced",
+            List.of(12), List.of(507))); // → Node 12, comp: Thrift
+
+        // === PHASE 3: RESILIENCE & RELIABILITY (Nodes 12-17) ===
+        nodes.add(createNode(12, "Circuit Breaker Pattern", "Prevent cascading failures",
+            "build", "Implement circuit breaker with Resilience4j or Hystrix", 6, 4, "advanced",
+            List.of(13), List.of())); // → Node 13
+
+        nodes.add(createNode(13, "Retry and Timeout Strategies", "Handle transient failures",
+            "build", "Implement exponential backoff and timeout policies", 5, 3, "advanced",
+            List.of(14), List.of())); // → Node 14
+
+        nodes.add(createNode(14, "Rate Limiting and Throttling", "Protect services from overload",
+            "build", "Implement rate limiting per client with token bucket", 5, 3, "advanced",
+            List.of(15), List.of())); // → Node 15
+
+        nodes.add(createNode(15, "Bulkhead Pattern", "Isolate failures",
+            "build", "Implement bulkhead pattern with thread pools", 6, 3, "specialized",
+            List.of(16), List.of())); // → Node 16
+
+        nodes.add(createNode(16, "Health Checks and Readiness Probes", "Monitor service health",
+            "build", "Implement health check endpoints for liveness and readiness", 4, 3, "specialized",
+            List.of(17), List.of())); // → Node 17
+
+        nodes.add(createNode(17, "Distributed Tracing", "Track requests across services",
+            "build", "Implement distributed tracing with Jaeger or Zipkin", 6, 5, "specialized",
+            List.of(18), List.of(508))); // → Node 18, comp: OpenTelemetry
+
+        // === PHASE 4: DATA MANAGEMENT (Nodes 18-23) ===
+        nodes.add(createNode(18, "Database per Service Pattern", "Each service owns its data",
+            "probe", "Design database per service with bounded context", 5, 4, "specialized",
+            List.of(19), List.of(509))); // → Node 19, comp: Shared database antipattern
+
+        nodes.add(createNode(19, "Data Consistency Patterns", "CAP theorem in practice",
+            "probe", "Explain eventual consistency and CAP theorem trade-offs", 6, 4, "specialized",
+            List.of(20), List.of())); // → Node 20
+
+        nodes.add(createNode(20, "CQRS Pattern", "Separate reads from writes",
+            "build", "Implement CQRS with separate read and write models", 7, 6, "specialized",
+            List.of(21), List.of(510))); // → Node 21, comp: Event sourcing
+
+        nodes.add(createNode(21, "API Composition Pattern", "Aggregate data from multiple services",
+            "build", "Implement API composition for cross-service queries", 6, 4, "specialized",
+            List.of(22), List.of())); // → Node 22
+
+        nodes.add(createNode(22, "Distributed Caching", "Improve performance with caching",
+            "build", "Implement distributed cache with Redis", 5, 4, "specialized",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "Database Migration Strategies", "Evolve schemas safely",
+            "build", "Implement database migrations with Flyway or Liquibase", 5, 3, "specialized",
+            List.of(24), List.of())); // → Node 24
+
+        // === PHASE 5: DEPLOYMENT & OPERATIONS (Nodes 24-30) ===
+        nodes.add(createNode(24, "Containerization with Docker", "Package services as containers",
+            "build", "Create Dockerfiles and build optimized container images", 5, 4, "specialized",
+            List.of(25), List.of())); // → Node 25
+
+        nodes.add(createNode(25, "Kubernetes Orchestration", "Manage containers at scale",
+            "build", "Deploy microservices to Kubernetes with deployments and services", 8, 7, "specialized",
+            List.of(26), List.of(511))); // → Node 26, comp: Helm charts
+
+        nodes.add(createNode(26, "Service Mesh", "Advanced service-to-service communication",
+            "build", "Implement service mesh with Istio or Linkerd", 8, 6, "specialized",
+            List.of(27), List.of(512))); // → Node 27, comp: Envoy proxy
+
+        nodes.add(createNode(27, "Centralized Logging", "Aggregate logs from all services",
+            "build", "Implement centralized logging with ELK stack", 6, 5, "specialized",
+            List.of(28), List.of())); // → Node 28
+
+        nodes.add(createNode(28, "Monitoring and Alerting", "Observability across services",
+            "build", "Set up Prometheus, Grafana, and alerting rules", 6, 5, "specialized",
+            List.of(29), List.of(513))); // → Node 29, comp: APM tools
+
+        nodes.add(createNode(29, "CI/CD for Microservices", "Automate deployment pipeline",
+            "build", "Build CI/CD pipeline with GitLab CI or Jenkins", 7, 6, "specialized",
+            List.of(30), List.of())); // → Node 30
+
+        nodes.add(createNode(30, "Microservices Security", "Secure inter-service communication",
+            "apply", "Implement mTLS, OAuth 2.0, and API security best practices", 8, 6, "specialized",
+            List.of(), List.of(514, 515))); // Final node, comp: Zero trust, Service mesh security
+
+        // === COMPETENCY NODES (501-515) - Optional branches ===
+        nodes.add(createNode(501, "Service-Oriented Architecture (SOA)", "SOA vs microservices",
+            "probe", "Compare SOA and microservices architectures", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(502, "Event Storming", "Collaborative DDD workshop",
+            "probe", "Facilitate event storming workshop", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(503, "GraphQL for Microservices", "GraphQL federation",
+            "build", "Implement GraphQL gateway with federation", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(504, "Backend for Frontend (BFF) Pattern", "Per-client API gateway",
+            "build", "Implement BFF pattern for web and mobile", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(505, "Event-Driven Architecture Patterns", "EDA patterns",
+            "probe", "Explain event notification, event-carried state transfer, event sourcing", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(506, "CQRS Deep Dive", "Command Query Responsibility Segregation",
+            "probe", "Explain CQRS benefits and trade-offs", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(507, "Apache Thrift", "Alternative RPC framework",
+            "probe", "Compare gRPC and Thrift", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(508, "OpenTelemetry", "Observability standard",
+            "build", "Implement OpenTelemetry for metrics and traces", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(509, "Shared Database Antipattern", "Why not to share databases",
+            "probe", "Explain problems with shared databases", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(510, "Event Sourcing", "Store events instead of state",
+            "build", "Implement event sourcing with event store", 8, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(511, "Helm Charts", "Kubernetes package manager",
+            "build", "Create Helm charts for microservices", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(512, "Envoy Proxy", "Modern proxy for service mesh",
+            "probe", "Explain Envoy proxy and its role in service mesh", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(513, "APM Tools", "Application Performance Monitoring",
+            "build", "Integrate New Relic or Datadog", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(514, "Zero Trust Security", "Never trust, always verify",
+            "probe", "Explain zero trust for microservices", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(515, "Service Mesh Security", "mTLS and policy enforcement",
+            "build", "Configure mTLS and authorization policies in Istio", 8, 5, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Microservices Architect path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Database Engineer Path Template
+     * 30 main nodes + ~20 competency branches - Linear progression
+     */
+    private List<DetailedPathNode> generateDatabaseEngineerPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY DATABASE ENGINEER PATH
+        // 30 main nodes covering SQL, NoSQL, performance, replication, and operations
+
+        // === PHASE 1: SQL FOUNDATIONS (Nodes 1-6) ===
+        nodes.add(createNode(1, "Relational Database Fundamentals", "SQL powers most applications",
+            "probe", "Explain tables, rows, columns, keys, and relational algebra", 2, 3, "foundational",
+            List.of(2), List.of(601))); // → Node 2, comp: Database history
+
+        nodes.add(createNode(2, "SQL Query Fundamentals", "Reading data is the most common operation",
+            "build", "Write SELECT queries with WHERE, ORDER BY, GROUP BY, LIMIT", 3, 3, "foundational",
+            List.of(3), List.of())); // → Node 3
+
+        nodes.add(createNode(3, "SQL Joins", "Combine data from multiple tables",
+            "build", "Write INNER, LEFT, RIGHT, FULL, CROSS joins", 4, 4, "foundational",
+            List.of(4), List.of(602))); // → Node 4, comp: Self joins
+
+        nodes.add(createNode(4, "SQL Data Manipulation", "Modify data in tables",
+            "build", "Write INSERT, UPDATE, DELETE with transactions", 3, 3, "core",
+            List.of(5), List.of())); // → Node 5
+
+        nodes.add(createNode(5, "SQL Aggregations and Window Functions", "Advanced analytics",
+            "build", "Use SUM, AVG, COUNT with GROUP BY and window functions", 5, 4, "core",
+            List.of(6), List.of(603))); // → Node 6, comp: CTEs
+
+        nodes.add(createNode(6, "Subqueries and Derived Tables", "Complex queries",
+            "build", "Write correlated subqueries and derived tables", 5, 4, "core",
+            List.of(7), List.of())); // → Node 7
+
+        // === PHASE 2: DATABASE DESIGN (Nodes 7-12) ===
+        nodes.add(createNode(7, "Database Normalization", "Eliminate redundancy",
+            "probe", "Normalize schemas to 1NF, 2NF, 3NF, and BCNF", 5, 4, "core",
+            List.of(8), List.of(604))); // → Node 8, comp: Denormalization
+
+        nodes.add(createNode(8, "Entity-Relationship Modeling", "Design databases visually",
+            "build", "Create ER diagrams with entities, relationships, and cardinality", 4, 3, "core",
+            List.of(9), List.of())); // → Node 9
+
+        nodes.add(createNode(9, "Database Constraints", "Enforce data integrity",
+            "build", "Implement PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK, NOT NULL", 4, 3, "core",
+            List.of(10), List.of())); // → Node 10
+
+        nodes.add(createNode(10, "Indexes and Performance", "Speed up queries dramatically",
+            "build", "Create B-tree, hash, and composite indexes", 6, 4, "advanced",
+            List.of(11), List.of(605))); // → Node 11, comp: Covering indexes
+
+        nodes.add(createNode(11, "Query Optimization", "Write efficient queries",
+            "build", "Analyze query plans and optimize with indexes", 6, 5, "advanced",
+            List.of(12), List.of(606))); // → Node 12, comp: EXPLAIN ANALYZE
+
+        nodes.add(createNode(12, "Database Transactions", "ACID properties",
+            "probe", "Explain ACID, isolation levels, and transaction management", 5, 4, "advanced",
+            List.of(13), List.of())); // → Node 13
+
+        // === PHASE 3: ADVANCED SQL (Nodes 13-18) ===
+        nodes.add(createNode(13, "Stored Procedures and Functions", "Reusable database logic",
+            "build", "Write stored procedures and user-defined functions", 6, 4, "advanced",
+            List.of(14), List.of(607))); // → Node 14, comp: Triggers
+
+        nodes.add(createNode(14, "Views and Materialized Views", "Virtual and cached tables",
+            "build", "Create views and materialized views for performance", 5, 3, "advanced",
+            List.of(15), List.of())); // → Node 15
+
+        nodes.add(createNode(15, "Partitioning and Sharding", "Scale databases horizontally",
+            "build", "Implement table partitioning and sharding strategies", 7, 5, "advanced",
+            List.of(16), List.of(608))); // → Node 16, comp: Vertical partitioning
+
+        nodes.add(createNode(16, "Full-Text Search", "Search text efficiently",
+            "build", "Implement full-text search with indexes", 6, 4, "specialized",
+            List.of(17), List.of(609))); // → Node 17, comp: Elasticsearch
+
+        nodes.add(createNode(17, "JSON and Semi-Structured Data", "Store flexible schemas",
+            "build", "Use JSON columns and query JSON data", 5, 4, "specialized",
+            List.of(18), List.of())); // → Node 18
+
+        nodes.add(createNode(18, "Database Security", "Protect sensitive data",
+            "build", "Implement roles, permissions, encryption, and SQL injection prevention", 6, 4, "specialized",
+            List.of(19), List.of(610))); // → Node 19, comp: Row-level security
+
+        // === PHASE 4: REPLICATION & HA (Nodes 19-24) ===
+        nodes.add(createNode(19, "Database Replication", "High availability and read scaling",
+            "build", "Set up primary-replica replication", 6, 5, "specialized",
+            List.of(20), List.of(611))); // → Node 20, comp: Multi-master replication
+
+        nodes.add(createNode(20, "Backup and Recovery", "Protect against data loss",
+            "build", "Implement backup strategies and point-in-time recovery", 6, 4, "specialized",
+            List.of(21), List.of())); // → Node 21
+
+        nodes.add(createNode(21, "High Availability Strategies", "Minimize downtime",
+            "build", "Implement failover with read replicas and load balancing", 7, 5, "specialized",
+            List.of(22), List.of(612))); // → Node 22, comp: Patroni
+
+        nodes.add(createNode(22, "Connection Pooling", "Manage database connections",
+            "build", "Configure connection pooling with PgBouncer or HikariCP", 5, 3, "specialized",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "Database Monitoring", "Track performance and health",
+            "build", "Monitor with Prometheus, Grafana, and slow query logs", 6, 4, "specialized",
+            List.of(24), List.of(613))); // → Node 24, comp: Query performance insights
+
+        nodes.add(createNode(24, "Database Migrations", "Evolve schemas safely",
+            "build", "Use Flyway or Liquibase for schema migrations", 5, 3, "specialized",
+            List.of(25), List.of())); // → Node 25
+
+        // === PHASE 5: NOSQL & ADVANCED (Nodes 25-30) ===
+        nodes.add(createNode(25, "NoSQL Database Fundamentals", "Non-relational databases",
+            "probe", "Compare document, key-value, column-family, and graph databases", 5, 4, "specialized",
+            List.of(26), List.of(614))); // → Node 26, comp: CAP theorem
+
+        nodes.add(createNode(26, "Document Databases (MongoDB)", "Flexible schema storage",
+            "build", "Design schemas and query MongoDB", 6, 5, "specialized",
+            List.of(27), List.of(615))); // → Node 27, comp: Aggregation pipeline
+
+        nodes.add(createNode(27, "Key-Value Stores (Redis)", "Caching and fast lookups",
+            "build", "Use Redis for caching, sessions, and pub/sub", 5, 4, "specialized",
+            List.of(28), List.of())); // → Node 28
+
+        nodes.add(createNode(28, "Time-Series Databases", "Optimize for time-series data",
+            "build", "Use TimescaleDB or InfluxDB for metrics", 6, 4, "specialized",
+            List.of(29), List.of(616))); // → Node 29, comp: Cassandra
+
+        nodes.add(createNode(29, "Database Performance Tuning", "Optimize at every level",
+            "build", "Tune parameters, analyze bottlenecks, and optimize queries", 8, 6, "specialized",
+            List.of(30), List.of())); // → Node 30
+
+        nodes.add(createNode(30, "Database in Production", "Deploy and operate at scale",
+            "apply", "Manage databases in production with monitoring, backups, and disaster recovery", 8, 6, "specialized",
+            List.of(), List.of(617, 618))); // Final node, comp: Cloud databases, DB automation
+
+        // === COMPETENCY NODES (601-618) - Optional branches ===
+        nodes.add(createNode(601, "History of Databases", "Evolution of data storage",
+            "probe", "Explain database evolution from flat files to modern systems", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(602, "Self Joins", "Join table to itself",
+            "build", "Write self joins for hierarchical data", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(603, "Common Table Expressions (CTEs)", "Readable complex queries",
+            "build", "Write recursive and non-recursive CTEs", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(604, "Denormalization", "Trade-offs of denormalization",
+            "probe", "Explain when and how to denormalize", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(605, "Covering Indexes", "Indexes that include all columns",
+            "build", "Create covering indexes for index-only scans", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(606, "EXPLAIN ANALYZE", "Analyze query execution",
+            "build", "Use EXPLAIN ANALYZE to optimize queries", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(607, "Database Triggers", "Automatic actions on data changes",
+            "build", "Create triggers for audit logging", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(608, "Vertical Partitioning", "Split tables by columns",
+            "probe", "Explain vertical vs horizontal partitioning", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(609, "Elasticsearch", "Dedicated search engine",
+            "build", "Index and search data with Elasticsearch", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(610, "Row-Level Security", "Fine-grained access control",
+            "build", "Implement row-level security policies", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(611, "Multi-Master Replication", "Write to multiple primaries",
+            "probe", "Explain multi-master replication and conflict resolution", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(612, "Patroni", "HA for PostgreSQL",
+            "build", "Set up Patroni for PostgreSQL HA", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(613, "Query Performance Insights", "Cloud database monitoring",
+            "probe", "Use AWS RDS Performance Insights", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(614, "CAP Theorem", "Distributed systems trade-offs",
+            "probe", "Explain Consistency, Availability, Partition tolerance", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(615, "MongoDB Aggregation Pipeline", "Complex data processing",
+            "build", "Build aggregation pipelines in MongoDB", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(616, "Cassandra", "Wide-column distributed database",
+            "probe", "Explain Cassandra architecture and use cases", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(617, "Cloud Databases", "Managed database services",
+            "build", "Use RDS, Aurora, or Cloud SQL", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(618, "Database Automation", "Infrastructure as code for databases",
+            "build", "Automate database provisioning with Terraform", 7, 5, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Database Engineer path with " + nodes.size() + " nodes (30 main + 18 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Generate path for DevOps Engineer (roleId: 2)
+     * Structure: 30 main nodes + 16 competency branches
+     * Focus: Infrastructure, CI/CD, containers, monitoring
+     */
+    private List<DetailedPathNode> generateDevOpsEngineerPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // === MAIN PATH (1-30) - Linear progression ===
+        nodes.add(createNode(1, "Linux Fundamentals", "Master the OS that runs the internet",
+            "probe", "Navigate file systems, understand processes, manage permissions", 3, 4, "foundational",
+            List.of(2), List.of(701))); // → Node 2, comp: Shell scripting
+
+        nodes.add(createNode(2, "Command Line Tools", "Automate with powerful CLI utilities",
+            "build", "Use grep, awk, sed, and pipes for text processing", 3, 3, "foundational",
+            List.of(3), List.of())); // → Node 3
+
+        nodes.add(createNode(3, "Version Control (Git)", "Collaborate on code changes",
+            "build", "Use Git for branching, merging, and code reviews", 3, 4, "foundational",
+            List.of(4), List.of(702))); // → Node 4, comp: Git workflows
+
+        nodes.add(createNode(4, "Networking Basics", "Understand how systems communicate",
+            "probe", "Explain TCP/IP, DNS, HTTP, and load balancing", 4, 4, "foundational",
+            List.of(5), List.of())); // → Node 5
+
+        nodes.add(createNode(5, "SSH & Remote Access", "Securely connect to remote servers",
+            "build", "Use SSH keys, configure sshd, set up jump hosts", 4, 3, "foundational",
+            List.of(6), List.of())); // → Node 6
+
+        nodes.add(createNode(6, "Scripting (Bash/Python)", "Automate repetitive tasks",
+            "build", "Write scripts for automation, backups, and monitoring", 4, 5, "core",
+            List.of(7), List.of(703))); // → Node 7, comp: Python for DevOps
+
+        nodes.add(createNode(7, "Docker Containers", "Package applications with dependencies",
+            "build", "Create Dockerfiles, build images, run containers", 5, 5, "core",
+            List.of(8), List.of(704))); // → Node 8, comp: Multi-stage builds
+
+        nodes.add(createNode(8, "Container Orchestration (Kubernetes)", "Manage containers at scale",
+            "build", "Deploy apps to K8s, use pods, services, and deployments", 6, 6, "core",
+            List.of(9), List.of(705, 706))); // → Node 9, comp: Helm, K8s networking
+
+        nodes.add(createNode(9, "CI/CD Pipelines", "Automate build, test, and deploy",
+            "build", "Create Jenkins/GitHub Actions pipelines", 5, 5, "core",
+            List.of(10), List.of(707))); // → Node 10, comp: GitOps
+
+        nodes.add(createNode(10, "Infrastructure as Code (Terraform)", "Define infrastructure in code",
+            "build", "Provision AWS/GCP/Azure resources with Terraform", 6, 6, "core",
+            List.of(11), List.of(708))); // → Node 11, comp: Terraform modules
+
+        nodes.add(createNode(11, "Configuration Management (Ansible)", "Automate server configuration",
+            "build", "Write Ansible playbooks for configuration management", 5, 5, "core",
+            List.of(12), List.of())); // → Node 12
+
+        nodes.add(createNode(12, "Monitoring & Logging (Prometheus/ELK)", "Observe system health",
+            "build", "Set up Prometheus for metrics, ELK for logs", 6, 6, "core",
+            List.of(13), List.of(709))); // → Node 13, comp: Grafana dashboards
+
+        nodes.add(createNode(13, "Alerting & On-Call", "Respond to incidents",
+            "build", "Configure alerts, set up PagerDuty/OpsGenie", 5, 4, "core",
+            List.of(14), List.of())); // → Node 14
+
+        nodes.add(createNode(14, "Cloud Platforms (AWS)", "Deploy to the cloud",
+            "build", "Use EC2, S3, RDS, IAM, and VPC", 6, 6, "advanced",
+            List.of(15), List.of(710))); // → Node 15, comp: AWS advanced
+
+        nodes.add(createNode(15, "Load Balancing & Proxies", "Distribute traffic effectively",
+            "build", "Configure Nginx/HAProxy as reverse proxy and load balancer", 5, 4, "advanced",
+            List.of(16), List.of())); // → Node 16
+
+        nodes.add(createNode(16, "Database Operations", "Manage databases in production",
+            "build", "Set up backups, replication, and monitoring for databases", 6, 5, "advanced",
+            List.of(17), List.of(711))); // → Node 17, comp: DB failover
+
+        nodes.add(createNode(17, "Security & Secrets Management", "Protect credentials and keys",
+            "build", "Use Vault/AWS Secrets Manager for secrets", 6, 5, "advanced",
+            List.of(18), List.of(712))); // → Node 18, comp: mTLS
+
+        nodes.add(createNode(18, "Disaster Recovery & Backups", "Prepare for the worst",
+            "build", "Implement backup strategies, test DR procedures", 6, 5, "advanced",
+            List.of(19), List.of())); // → Node 19
+
+        nodes.add(createNode(19, "Performance Tuning", "Optimize system performance",
+            "build", "Profile bottlenecks, tune OS and app parameters", 7, 5, "advanced",
+            List.of(20), List.of())); // → Node 20
+
+        nodes.add(createNode(20, "High Availability", "Design fault-tolerant systems",
+            "probe", "Explain HA patterns, failover, and redundancy", 7, 5, "advanced",
+            List.of(21), List.of(713))); // → Node 21, comp: Chaos engineering
+
+        nodes.add(createNode(21, "Service Mesh (Istio)", "Manage microservices communication",
+            "build", "Deploy Istio for traffic management and observability", 7, 6, "specialized",
+            List.of(22), List.of())); // → Node 22
+
+        nodes.add(createNode(22, "Cost Optimization", "Reduce cloud spending",
+            "build", "Analyze costs, right-size resources, use spot instances", 6, 4, "specialized",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "Multi-Cloud Strategy", "Avoid vendor lock-in",
+            "probe", "Explain multi-cloud trade-offs and migration strategies", 7, 5, "specialized",
+            List.of(24), List.of(714))); // → Node 24, comp: Cloud migration
+
+        nodes.add(createNode(24, "Compliance & Auditing", "Meet regulatory requirements",
+            "probe", "Explain SOC 2, HIPAA, GDPR compliance for infrastructure", 6, 4, "specialized",
+            List.of(25), List.of())); // → Node 25
+
+        nodes.add(createNode(25, "Incident Management", "Handle production incidents",
+            "apply", "Lead incident response, write postmortems", 7, 5, "specialized",
+            List.of(26), List.of(715))); // → Node 26, comp: SRE practices
+
+        nodes.add(createNode(26, "Autoscaling & Capacity Planning", "Scale based on demand",
+            "build", "Implement horizontal pod autoscaling, plan capacity", 7, 5, "specialized",
+            List.of(27), List.of())); // → Node 27
+
+        nodes.add(createNode(27, "Immutable Infrastructure", "Treat servers as cattle, not pets",
+            "build", "Use AMIs/images, never modify running servers", 6, 4, "specialized",
+            List.of(28), List.of())); // → Node 28
+
+        nodes.add(createNode(28, "Serverless & Functions", "Run code without managing servers",
+            "build", "Deploy Lambda/Cloud Functions for event-driven workloads", 6, 5, "specialized",
+            List.of(29), List.of(716))); // → Node 29, comp: Serverless frameworks
+
+        nodes.add(createNode(29, "Platform Engineering", "Build internal developer platforms",
+            "build", "Create self-service tools for developers", 7, 6, "specialized",
+            List.of(30), List.of())); // → Node 30
+
+        nodes.add(createNode(30, "DevOps in Production", "Operate at enterprise scale",
+            "apply", "Manage infrastructure for high-traffic production systems", 8, 6, "specialized",
+            List.of(), List.of())); // Final node
+
+        // === COMPETENCY NODES (701-716) - Optional branches ===
+        nodes.add(createNode(701, "Shell Scripting Best Practices", "Write maintainable scripts",
+            "probe", "Explain error handling, idempotency, and script structure", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(702, "Git Workflows (Gitflow, Trunk-based)", "Team collaboration patterns",
+            "probe", "Explain branching strategies for teams", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(703, "Python for DevOps", "Advanced automation with Python",
+            "build", "Write Python scripts for cloud APIs and automation", 5, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(704, "Multi-stage Docker Builds", "Optimize Docker images",
+            "build", "Create lean production images with multi-stage builds", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(705, "Helm Charts", "Package Kubernetes apps",
+            "build", "Create and deploy Helm charts", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(706, "Kubernetes Networking", "Understand K8s networking model",
+            "probe", "Explain pod networking, CNI, and network policies", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(707, "GitOps (ArgoCD/Flux)", "Declarative deployments",
+            "build", "Implement GitOps for continuous deployment", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(708, "Terraform Modules", "Reusable infrastructure code",
+            "build", "Create and publish Terraform modules", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(709, "Grafana Dashboards", "Visualize metrics beautifully",
+            "build", "Create custom Grafana dashboards for monitoring", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(710, "AWS Advanced Services", "Deep dive into AWS",
+            "build", "Use ECS, EKS, Lambda, API Gateway, and CloudFormation", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(711, "Database Failover & Replication", "Ensure DB high availability",
+            "build", "Set up master-slave replication, test failover", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(712, "Mutual TLS (mTLS)", "Secure service-to-service communication",
+            "build", "Implement mTLS for microservices", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(713, "Chaos Engineering", "Test system resilience",
+            "build", "Use Chaos Monkey to introduce failures", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(714, "Cloud Migration Strategies", "Move workloads to the cloud",
+            "probe", "Explain lift-and-shift, replatform, refactor strategies", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(715, "SRE Practices", "Site Reliability Engineering principles",
+            "probe", "Explain SLOs, SLIs, error budgets", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(716, "Serverless Frameworks", "Simplify serverless deployments",
+            "build", "Use Serverless Framework or SAM for deployments", 6, 4, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated DevOps Engineer path with " + nodes.size() + " nodes (30 main + 16 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Generate path for Mobile Developer (roleId: 6)
+     * Structure: 30 main nodes + 18 competency branches
+     * Focus: iOS, Android, React Native, mobile UX
+     */
+    private List<DetailedPathNode> generateMobileDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // === MAIN PATH (1-30) - Linear progression ===
+        nodes.add(createNode(1, "Mobile Development Fundamentals", "Understand mobile ecosystem",
+            "probe", "Explain iOS vs Android, native vs hybrid", 3, 3, "foundational",
+            List.of(2), List.of(801))); // → Node 2, comp: Mobile history
+
+        nodes.add(createNode(2, "UI Design for Mobile", "Master mobile-first design",
+            "probe", "Explain touch targets, responsive layouts, mobile patterns", 3, 4, "foundational",
+            List.of(3), List.of())); // → Node 3
+
+        nodes.add(createNode(3, "JavaScript for Mobile", "Foundation for React Native",
+            "build", "Master ES6+, async/await, promises", 4, 5, "foundational",
+            List.of(4), List.of(802))); // → Node 4, comp: TypeScript
+
+        nodes.add(createNode(4, "React Fundamentals", "Components and state",
+            "build", "Build React apps with components, props, and hooks", 4, 5, "foundational",
+            List.of(5), List.of())); // → Node 5
+
+        nodes.add(createNode(5, "React Native Basics", "Write once, run on iOS and Android",
+            "build", "Create React Native app with core components", 4, 5, "core",
+            List.of(6), List.of(803))); // → Node 6, comp: Expo
+
+        nodes.add(createNode(6, "Navigation (React Navigation)", "Multi-screen apps",
+            "build", "Implement stack, tab, and drawer navigation", 4, 4, "core",
+            List.of(7), List.of())); // → Node 7
+
+        nodes.add(createNode(7, "State Management (Redux/Context)", "Manage app state",
+            "build", "Use Redux or Context API for global state", 5, 5, "core",
+            List.of(8), List.of(804))); // → Node 8, comp: Zustand
+
+        nodes.add(createNode(8, "API Integration & Networking", "Fetch data from backends",
+            "build", "Use Axios/Fetch for REST APIs, handle errors", 5, 5, "core",
+            List.of(9), List.of())); // → Node 9
+
+        nodes.add(createNode(9, "Local Storage (AsyncStorage)", "Persist data on device",
+            "build", "Store user preferences and cache data locally", 4, 4, "core",
+            List.of(10), List.of(805))); // → Node 10, comp: SQLite
+
+        nodes.add(createNode(10, "Authentication & User Sessions", "Secure user login",
+            "build", "Implement JWT auth, secure storage of tokens", 5, 5, "core",
+            List.of(11), List.of())); // → Node 11
+
+        nodes.add(createNode(11, "Forms & Validation", "Collect user input",
+            "build", "Create forms with validation and error handling", 4, 4, "core",
+            List.of(12), List.of())); // → Node 12
+
+        nodes.add(createNode(12, "Animations & Gestures", "Smooth user interactions",
+            "build", "Use Reanimated and Gesture Handler for animations", 6, 5, "core",
+            List.of(13), List.of(806))); // → Node 13, comp: Lottie
+
+        nodes.add(createNode(13, "Camera & Media", "Access device hardware",
+            "build", "Use camera, photo library, and media playback", 5, 5, "advanced",
+            List.of(14), List.of())); // → Node 14
+
+        nodes.add(createNode(14, "Push Notifications", "Engage users with notifications",
+            "build", "Implement FCM/APNs for push notifications", 5, 5, "advanced",
+            List.of(15), List.of())); // → Node 15
+
+        nodes.add(createNode(15, "Maps & Location Services", "Geo-enabled apps",
+            "build", "Integrate Google Maps, track location", 5, 5, "advanced",
+            List.of(16), List.of(807))); // → Node 16, comp: Geofencing
+
+        nodes.add(createNode(16, "Payment Integration (Stripe/IAP)", "Monetize your app",
+            "build", "Add payment processing and in-app purchases", 6, 5, "advanced",
+            List.of(17), List.of())); // → Node 17
+
+        nodes.add(createNode(17, "Testing (Jest, Detox)", "Test your mobile apps",
+            "build", "Write unit and E2E tests for React Native", 5, 5, "advanced",
+            List.of(18), List.of(808))); // → Node 18, comp: Testing strategies
+
+        nodes.add(createNode(18, "Performance Optimization", "Fast, smooth UX",
+            "build", "Optimize renders, reduce bundle size, lazy load", 6, 6, "advanced",
+            List.of(19), List.of())); // → Node 19
+
+        nodes.add(createNode(19, "iOS Native Modules (Swift)", "Extend React Native with native code",
+            "build", "Write Swift bridge modules for iOS", 7, 6, "advanced",
+            List.of(20), List.of(809))); // → Node 20, comp: SwiftUI
+
+        nodes.add(createNode(20, "Android Native Modules (Kotlin)", "Extend React Native with native code",
+            "build", "Write Kotlin bridge modules for Android", 7, 6, "advanced",
+            List.of(21), List.of(810))); // → Node 21, comp: Jetpack Compose
+
+        nodes.add(createNode(21, "App Store Deployment (iOS)", "Publish to Apple App Store",
+            "apply", "Configure certificates, build archive, submit for review", 6, 5, "specialized",
+            List.of(22), List.of())); // → Node 22
+
+        nodes.add(createNode(22, "Google Play Deployment (Android)", "Publish to Google Play",
+            "apply", "Generate signed APK/AAB, submit to Play Store", 6, 5, "specialized",
+            List.of(23), List.of(811))); // → Node 23, comp: App signing
+
+        nodes.add(createNode(23, "CI/CD for Mobile (Fastlane)", "Automate builds and releases",
+            "build", "Set up Fastlane for automated builds and deploys", 6, 5, "specialized",
+            List.of(24), List.of())); // → Node 24
+
+        nodes.add(createNode(24, "App Analytics (Firebase/Mixpanel)", "Understand user behavior",
+            "build", "Track events, funnels, and user retention", 5, 4, "specialized",
+            List.of(25), List.of())); // → Node 25
+
+        nodes.add(createNode(25, "Crash Reporting & Monitoring", "Debug production issues",
+            "build", "Integrate Sentry/Crashlytics for error tracking", 5, 4, "specialized",
+            List.of(26), List.of(812))); // → Node 26, comp: App monitoring
+
+        nodes.add(createNode(26, "Offline-First Architecture", "Apps that work without internet",
+            "build", "Implement sync strategies and conflict resolution", 7, 6, "specialized",
+            List.of(27), List.of())); // → Node 27
+
+        nodes.add(createNode(27, "App Security", "Protect user data",
+            "build", "Implement certificate pinning, secure storage, obfuscation", 7, 5, "specialized",
+            List.of(28), List.of(813))); // → Node 28, comp: Penetration testing
+
+        nodes.add(createNode(28, "Accessibility", "Apps for everyone",
+            "build", "Implement screen reader support, high contrast, large text", 5, 4, "specialized",
+            List.of(29), List.of())); // → Node 29
+
+        nodes.add(createNode(29, "Multi-Platform (Flutter/KMP)", "Explore other frameworks",
+            "probe", "Compare React Native with Flutter and Kotlin Multiplatform", 6, 5, "specialized",
+            List.of(30), List.of(814))); // → Node 30, comp: Flutter
+
+        nodes.add(createNode(30, "Mobile in Production", "Build and ship production apps",
+            "apply", "Launch a mobile app used by thousands of users", 8, 8, "specialized",
+            List.of(), List.of())); // Final node
+
+        // === COMPETENCY NODES (801-818) - Optional branches ===
+        nodes.add(createNode(801, "History of Mobile Development", "From J2ME to modern frameworks",
+            "probe", "Explain evolution of mobile platforms", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(802, "TypeScript for React Native", "Type-safe mobile apps",
+            "build", "Convert React Native project to TypeScript", 5, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(803, "Expo vs Bare React Native", "Choose the right setup",
+            "probe", "Compare Expo managed workflow vs bare React Native", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(804, "Zustand State Management", "Lightweight alternative to Redux",
+            "build", "Use Zustand for simpler state management", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(805, "SQLite for Mobile", "Local SQL database",
+            "build", "Use SQLite for complex local data storage", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(806, "Lottie Animations", "Beautiful animations from After Effects",
+            "build", "Integrate Lottie JSON animations", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(807, "Geofencing", "Trigger actions based on location",
+            "build", "Create location-based alerts and actions", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(808, "Testing Strategies", "Comprehensive testing approach",
+            "probe", "Explain testing pyramid for mobile apps", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(809, "SwiftUI Basics", "Modern iOS UI framework",
+            "build", "Create simple SwiftUI views", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(810, "Jetpack Compose Basics", "Modern Android UI framework",
+            "build", "Create simple Compose UIs", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(811, "App Signing & Security", "Secure your app binaries",
+            "probe", "Explain code signing, keystore management", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(812, "App Monitoring & Performance", "Track app performance in production",
+            "build", "Monitor app startup time, memory, battery usage", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(813, "Mobile Penetration Testing", "Test app security",
+            "build", "Use MobSF and other tools to test security", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(814, "Flutter Development", "Alternative cross-platform framework",
+            "build", "Build Flutter app with Dart", 7, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(815, "Deep Linking", "Navigate users from web to app",
+            "build", "Implement universal links and deep links", 5, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(816, "App Store Optimization (ASO)", "Improve app discoverability",
+            "probe", "Optimize title, keywords, screenshots for ASO", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(817, "Mobile Backend (Firebase)", "Full backend for mobile apps",
+            "build", "Use Firebase Auth, Firestore, Functions", 6, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(818, "Mobile DevOps", "CI/CD for mobile at scale",
+            "build", "Set up CI/CD with GitHub Actions and EAS", 6, 5, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Mobile Developer path with " + nodes.size() + " nodes (30 main + 18 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Generate path for ML Engineer (roleId: 10)
+     * Structure: 30 main nodes + 20 competency branches
+     * Focus: Machine learning, deep learning, MLOps
+     */
+    private List<DetailedPathNode> generateMLEngineerPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // === MAIN PATH (1-30) - Linear progression ===
+        nodes.add(createNode(1, "Python for ML", "Master the language of data science",
+            "build", "Use NumPy, Pandas, and Matplotlib for data manipulation", 4, 5, "foundational",
+            List.of(2), List.of(901))); // → Node 2, comp: Jupyter notebooks
+
+        nodes.add(createNode(2, "Statistics & Probability", "Foundation for ML",
+            "probe", "Explain distributions, hypothesis testing, p-values", 5, 6, "foundational",
+            List.of(3), List.of(902))); // → Node 3, comp: Bayesian thinking
+
+        nodes.add(createNode(3, "Linear Algebra", "Math behind ML algorithms",
+            "probe", "Explain vectors, matrices, eigenvalues", 5, 5, "foundational",
+            List.of(4), List.of())); // → Node 4
+
+        nodes.add(createNode(4, "Data Cleaning & EDA", "Prepare data for modeling",
+            "build", "Clean messy data, handle missing values, visualize patterns", 4, 5, "foundational",
+            List.of(5), List.of())); // → Node 5
+
+        nodes.add(createNode(5, "Feature Engineering", "Create meaningful features",
+            "build", "Transform raw data into predictive features", 5, 5, "core",
+            List.of(6), List.of(903))); // → Node 6, comp: Feature selection
+
+        nodes.add(createNode(6, "Linear Regression", "First ML algorithm",
+            "build", "Implement linear regression from scratch and with sklearn", 4, 4, "core",
+            List.of(7), List.of())); // → Node 7
+
+        nodes.add(createNode(7, "Classification (Logistic Regression)", "Predict categories",
+            "build", "Build binary and multi-class classifiers", 5, 5, "core",
+            List.of(8), List.of())); // → Node 8
+
+        nodes.add(createNode(8, "Decision Trees & Random Forests", "Ensemble methods",
+            "build", "Use tree-based models for classification and regression", 5, 5, "core",
+            List.of(9), List.of(904))); // → Node 9, comp: Gradient boosting
+
+        nodes.add(createNode(9, "Model Evaluation", "Measure model performance",
+            "probe", "Explain accuracy, precision, recall, F1, ROC-AUC", 5, 5, "core",
+            List.of(10), List.of())); // → Node 10
+
+        nodes.add(createNode(10, "Overfitting & Regularization", "Prevent overfitting",
+            "probe", "Explain L1/L2 regularization, cross-validation", 6, 5, "core",
+            List.of(11), List.of(905))); // → Node 11, comp: Hyperparameter tuning
+
+        nodes.add(createNode(11, "Neural Networks Basics", "Introduction to deep learning",
+            "build", "Build a neural network from scratch using NumPy", 6, 6, "core",
+            List.of(12), List.of())); // → Node 12
+
+        nodes.add(createNode(12, "Deep Learning (TensorFlow/PyTorch)", "Modern DL frameworks",
+            "build", "Build and train neural networks with TensorFlow or PyTorch", 6, 6, "advanced",
+            List.of(13), List.of(906))); // → Node 13, comp: Keras
+
+        nodes.add(createNode(13, "Convolutional Neural Networks (CNNs)", "Computer vision models",
+            "build", "Build CNNs for image classification", 7, 6, "advanced",
+            List.of(14), List.of(907))); // → Node 14, comp: Transfer learning
+
+        nodes.add(createNode(14, "Recurrent Neural Networks (RNNs/LSTMs)", "Sequence models",
+            "build", "Build RNNs for time-series and text data", 7, 6, "advanced",
+            List.of(15), List.of())); // → Node 15
+
+        nodes.add(createNode(15, "Natural Language Processing (NLP)", "Work with text data",
+            "build", "Tokenization, embeddings, sentiment analysis", 6, 6, "advanced",
+            List.of(16), List.of(908))); // → Node 16, comp: Transformers
+
+        nodes.add(createNode(16, "Clustering (K-Means, DBSCAN)", "Unsupervised learning",
+            "build", "Group data without labels", 5, 5, "advanced",
+            List.of(17), List.of())); // → Node 17
+
+        nodes.add(createNode(17, "Dimensionality Reduction (PCA, t-SNE)", "Simplify high-dimensional data",
+            "build", "Reduce dimensions while preserving information", 6, 5, "advanced",
+            List.of(18), List.of(909))); // → Node 18, comp: UMAP
+
+        nodes.add(createNode(18, "Time Series Analysis", "Forecast future values",
+            "build", "Build ARIMA models, handle seasonality", 6, 6, "advanced",
+            List.of(19), List.of())); // → Node 19
+
+        nodes.add(createNode(19, "Recommendation Systems", "Personalized recommendations",
+            "build", "Build collaborative filtering and content-based recommendations", 6, 6, "advanced",
+            List.of(20), List.of(910))); // → Node 20, comp: Matrix factorization
+
+        nodes.add(createNode(20, "Model Deployment", "Serve ML models in production",
+            "build", "Deploy models with Flask/FastAPI, containerize with Docker", 6, 6, "specialized",
+            List.of(21), List.of(911))); // → Node 21, comp: TorchServe
+
+        nodes.add(createNode(21, "MLOps & Model Monitoring", "Manage ML in production",
+            "build", "Track experiments, monitor drift, retrain models", 7, 6, "specialized",
+            List.of(22), List.of(912))); // → Node 22, comp: MLflow
+
+        nodes.add(createNode(22, "Feature Stores", "Centralize feature management",
+            "build", "Use Feast or Tecton for feature serving", 6, 5, "specialized",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "Model Explainability (SHAP/LIME)", "Interpret black-box models",
+            "build", "Use SHAP and LIME to explain predictions", 7, 5, "specialized",
+            List.of(24), List.of(913))); // → Node 24, comp: Fairness
+
+        nodes.add(createNode(24, "AutoML", "Automate model selection and tuning",
+            "build", "Use AutoML tools like H2O, AutoGluon", 6, 5, "specialized",
+            List.of(25), List.of())); // → Node 25
+
+        nodes.add(createNode(25, "Reinforcement Learning", "Learn from interaction",
+            "build", "Implement Q-learning, policy gradients", 8, 8, "specialized",
+            List.of(26), List.of(914))); // → Node 26, comp: Deep RL
+
+        nodes.add(createNode(26, "Generative AI (GANs, VAEs)", "Generate new data",
+            "build", "Build GANs for image generation", 8, 7, "specialized",
+            List.of(27), List.of(915))); // → Node 27, comp: Diffusion models
+
+        nodes.add(createNode(27, "Large Language Models (LLMs)", "Work with foundation models",
+            "build", "Fine-tune GPT, use LangChain for LLM apps", 7, 7, "specialized",
+            List.of(28), List.of(916))); // → Node 28, comp: Prompt engineering
+
+        nodes.add(createNode(28, "ML System Design", "Design scalable ML systems",
+            "probe", "Explain end-to-end ML system architecture", 8, 6, "specialized",
+            List.of(29), List.of())); // → Node 29
+
+        nodes.add(createNode(29, "Distributed Training", "Train models on multiple GPUs/machines",
+            "build", "Use Horovod or PyTorch DDP for distributed training", 8, 7, "specialized",
+            List.of(30), List.of(917))); // → Node 30, comp: Model parallelism
+
+        nodes.add(createNode(30, "ML Engineer in Production", "Build production ML systems",
+            "apply", "Design, train, and deploy ML systems at scale", 9, 10, "specialized",
+            List.of(), List.of())); // Final node
+
+        // === COMPETENCY NODES (901-920) - Optional branches ===
+        nodes.add(createNode(901, "Jupyter Notebooks", "Interactive data science",
+            "build", "Use Jupyter for exploratory data analysis", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(902, "Bayesian Thinking", "Probabilistic reasoning",
+            "probe", "Explain Bayesian inference and priors", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(903, "Feature Selection Techniques", "Choose the right features",
+            "probe", "Explain correlation, mutual information, PCA", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(904, "Gradient Boosting (XGBoost, LightGBM)", "State-of-the-art models",
+            "build", "Use XGBoost for Kaggle-level performance", 6, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(905, "Hyperparameter Tuning", "Optimize model parameters",
+            "build", "Use grid search, random search, Bayesian optimization", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(906, "Keras API", "High-level neural network API",
+            "build", "Build models quickly with Keras", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(907, "Transfer Learning", "Reuse pretrained models",
+            "build", "Fine-tune ResNet, VGG for your task", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(908, "Transformers & BERT", "State-of-the-art NLP models",
+            "build", "Fine-tune BERT for text classification", 8, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(909, "UMAP for Visualization", "Better than t-SNE",
+            "build", "Use UMAP for high-dimensional visualization", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(910, "Matrix Factorization", "Core of recommendation systems",
+            "build", "Implement SVD, NMF for recommendations", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(911, "TorchServe & TensorFlow Serving", "Serve models at scale",
+            "build", "Deploy models with dedicated serving frameworks", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(912, "MLflow & Experiment Tracking", "Track ML experiments",
+            "build", "Log metrics, parameters, and models with MLflow", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(913, "Fairness & Bias in ML", "Build ethical models",
+            "probe", "Detect and mitigate bias in models", 7, 5, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(914, "Deep Reinforcement Learning", "RL with neural networks",
+            "build", "Implement DQN, A3C, PPO", 9, 8, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(915, "Diffusion Models", "State-of-the-art generative models",
+            "build", "Build diffusion models like Stable Diffusion", 9, 7, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(916, "Prompt Engineering", "Get the best from LLMs",
+            "probe", "Design effective prompts for GPT models", 6, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(917, "Model Parallelism", "Train huge models",
+            "probe", "Explain data vs model vs pipeline parallelism", 8, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(918, "Graph Neural Networks", "ML on graph-structured data",
+            "build", "Build GNNs for social networks, molecules", 8, 7, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(919, "MLOps Tools (Kubeflow, Airflow)", "Orchestrate ML pipelines",
+            "build", "Build ML pipelines with Kubeflow", 7, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(920, "Edge ML (TensorFlow Lite, ONNX)", "Run ML on mobile/edge devices",
+            "build", "Deploy models to mobile and IoT devices", 7, 6, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated ML Engineer path with " + nodes.size() + " nodes (30 main + 20 competencies)");
+        return nodes;
+    }
+
+    /**
+     * iOS Developer Path - Swift and iOS ecosystem
+     */
+    /**
+     * iOS Developer Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1001-1015
+     */
+    private List<DetailedPathNode> generateiOSDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Swift & iOS Basics (1-7)
+        nodes.add(createNode(1, "Swift Fundamentals", "Swift is Apple's modern, type-safe language for iOS",
+            "build", "Write Swift code using var/let, optionals, guard, and type inference", 4, 5, "foundational",
+            List.of(2), List.of(1001))); // → 2, comp: Swift history
+    
+        nodes.add(createNode(2, "Swift Collections & Generics", "Collections are fundamental data structures",
+            "build", "Use Array, Dictionary, Set with generic types and protocols", 4, 4, "foundational",
+            List.of(3), List.of(1002))); // → 3, comp: Protocol-oriented programming
+    
+        nodes.add(createNode(3, "Xcode IDE Mastery", "Xcode is your iOS development environment",
+            "probe", "Navigate Xcode, use storyboards, manage build configurations", 3, 3, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "iOS App Lifecycle", "Understanding app states prevents crashes and data loss",
+            "probe", "Explain app states: not running, inactive, active, background, suspended", 4, 3, "foundational",
+            List.of(5), List.of(1003))); // → 5, comp: App delegate patterns
+    
+        nodes.add(createNode(5, "UIKit Views & View Controllers", "UIKit is the traditional iOS UI framework",
+            "build", "Create UIView hierarchy, manage view controllers, implement navigation", 5, 6, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "Auto Layout Fundamentals", "Auto Layout enables responsive iOS interfaces",
+            "build", "Use constraints, stack views, and size classes for all devices", 5, 5, "foundational",
+            List.of(7), List.of(1004))); // → 7, comp: Programmatic constraints
+    
+        nodes.add(createNode(7, "Storyboards vs Programmatic UI", "Choose the right approach for your team",
+            "probe", "Compare storyboards, XIBs, and programmatic UI pros/cons", 4, 3, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: SwiftUI & Modern iOS (8-15)
+        nodes.add(createNode(8, "SwiftUI Basics", "SwiftUI is Apple's declarative UI framework",
+            "build", "Build views with Text, Image, Button, VStack, HStack using SwiftUI", 5, 6, "core",
+            List.of(9), List.of(1005))); // → 9, comp: SwiftUI vs UIKit
+    
+        nodes.add(createNode(9, "SwiftUI State Management", "@State and @Binding connect UI to data",
+            "build", "Use @State, @Binding, @ObservedObject for reactive UIs", 6, 5, "core",
+            List.of(10), List.of(1006))); // → 10, comp: Combine framework
+    
+        nodes.add(createNode(10, "Navigation in SwiftUI", "NavigationView enables multi-screen apps",
+            "build", "Implement NavigationView, NavigationLink, and sheet presentations", 5, 4, "core",
+            List.of(11), List.of()));
+    
+        nodes.add(createNode(11, "Lists & Data Display", "Lists are the most common iOS UI pattern",
+            "build", "Build scrollable lists with List, ForEach, and custom cells", 5, 5, "core",
+            List.of(12), List.of(1007))); // → 12, comp: UITableView vs List
+    
+        nodes.add(createNode(12, "Network Requests with URLSession", "Most apps need to fetch data from APIs",
+            "build", "Make GET/POST requests, parse JSON with Codable", 6, 6, "core",
+            List.of(13), List.of(1008))); // → 13, comp: Alamofire library
+    
+        nodes.add(createNode(13, "Async/Await in Swift", "Modern Swift uses async/await for concurrency",
+            "build", "Replace completion handlers with async/await syntax", 6, 5, "core",
+            List.of(14), List.of()));
+    
+        nodes.add(createNode(14, "Core Data Basics", "Core Data persists app data locally",
+            "build", "Set up Core Data stack, create entities, perform CRUD operations", 6, 7, "core",
+            List.of(15), List.of(1009))); // → 15, comp: UserDefaults vs Core Data
+    
+        nodes.add(createNode(15, "Image Loading & Caching", "Efficient image handling improves performance",
+            "build", "Load remote images asynchronously with caching", 5, 4, "core",
+            List.of(16), List.of(1010))); // → 16, comp: SDWebImage
+    
+        // PHASE 3: Advanced iOS (16-23)
+        nodes.add(createNode(16, "MVVM Architecture", "MVVM separates business logic from UI",
+            "build", "Refactor app to use Model-View-ViewModel pattern", 6, 6, "advanced",
+            List.of(17), List.of()));
+    
+        nodes.add(createNode(17, "Dependency Injection", "DI makes code testable and modular",
+            "build", "Implement protocol-based dependency injection", 6, 5, "advanced",
+            List.of(18), List.of(1011))); // → 18, comp: Swinject framework
+    
+        nodes.add(createNode(18, "Unit Testing in iOS", "Tests prevent regressions and document behavior",
+            "build", "Write XCTest unit tests with mocks and expectations", 5, 6, "advanced",
+            List.of(19), List.of()));
+    
+        nodes.add(createNode(19, "UI Testing with XCUITest", "Automated UI tests catch visual regressions",
+            "build", "Write XCUITest scripts for critical user flows", 5, 5, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Push Notifications", "Push notifications re-engage users",
+            "build", "Implement APNs, request permissions, handle notifications", 6, 6, "advanced",
+            List.of(21), List.of(1012))); // → 21, comp: Firebase Cloud Messaging
+    
+        nodes.add(createNode(21, "Keychain for Secure Storage", "Never store credentials in UserDefaults",
+            "build", "Use Keychain Services to store sensitive data securely", 5, 4, "advanced",
+            List.of(22), List.of()));
+    
+        nodes.add(createNode(22, "Face ID & Touch ID Authentication", "Biometric auth improves UX and security",
+            "build", "Implement Local Authentication framework for biometrics", 5, 5, "advanced",
+            List.of(23), List.of()));
+    
+        nodes.add(createNode(23, "App Performance Profiling", "Instruments reveals performance bottlenecks",
+            "build", "Use Instruments to profile CPU, memory, and network usage", 6, 5, "advanced",
+            List.of(24), List.of(1013))); // → 24, comp: Memory leaks detection
+    
+        // PHASE 4: Production & App Store (24-30)
+        nodes.add(createNode(24, "App Icon & Launch Screen", "First impressions matter in the App Store",
+            "build", "Design app icon, launch screen, and App Store screenshots", 3, 3, "specialized",
+            List.of(25), List.of()));
+    
+        nodes.add(createNode(25, "App Store Connect", "Publishing requires understanding Apple's process",
+            "probe", "Navigate App Store Connect, create app record, manage metadata", 4, 4, "specialized",
+            List.of(26), List.of()));
+    
+        nodes.add(createNode(26, "Provisioning Profiles & Certificates", "Code signing is required for distribution",
+            "build", "Create development and distribution certificates and profiles", 5, 5, "specialized",
+            List.of(27), List.of(1014))); // → 27, comp: Fastlane automation
+    
+        nodes.add(createNode(27, "TestFlight Beta Testing", "Beta testing catches bugs before public release",
+            "build", "Upload build to TestFlight, manage beta testers", 4, 3, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "App Review Guidelines Compliance", "Violating guidelines causes rejection",
+            "probe", "Review Apple's guidelines on privacy, payments, content", 4, 4, "specialized",
+            List.of(29), List.of()));
+    
+        nodes.add(createNode(29, "Crash Reporting with Crashlytics", "Production crashes must be monitored",
+            "build", "Integrate Firebase Crashlytics for crash reporting", 4, 4, "specialized",
+            List.of(30), List.of(1015))); // → 30, comp: Analytics integration
+    
+        nodes.add(createNode(30, "App Store Submission", "Final step: publishing to millions of users",
+            "apply", "Submit app for review, respond to rejection feedback if needed", 5, 6, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1001-1015)
+        nodes.add(createNode(1001, "History of Swift & Objective-C", "Understanding evolution aids migration",
+            "probe", "Explain Swift's evolution from Objective-C, key language milestones", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1002, "Protocol-Oriented Programming", "Protocols enable flexible, composable code",
+            "probe", "Explain protocols, extensions, and POP vs OOP in Swift", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1003, "AppDelegate vs SceneDelegate", "iOS 13+ uses SceneDelegate for multi-window",
+            "probe", "Explain scene-based lifecycle in modern iOS apps", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1004, "Programmatic Auto Layout", "Code-based layouts offer more control",
+            "build", "Create constraints in code using NSLayoutConstraint and anchors", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1005, "SwiftUI vs UIKit Trade-offs", "Choose the right framework for your project",
+            "probe", "Compare SwiftUI and UIKit for different use cases and iOS versions", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1006, "Combine Framework", "Reactive programming handles asynchronous events",
+            "build", "Use Combine publishers, subscribers, and operators", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1007, "UITableView Deep Dive", "UITableView remains powerful for complex UIs",
+            "build", "Implement custom cells, sections, cell reuse optimization", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1008, "Alamofire Networking", "Alamofire simplifies network requests",
+            "build", "Use Alamofire for requests with interceptors and validation", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1009, "UserDefaults vs Keychain vs Core Data", "Choose appropriate storage mechanism",
+            "probe", "Compare persistence options by use case and security requirements", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1010, "SDWebImage for Image Caching", "SDWebImage handles image loading efficiently",
+            "build", "Implement SDWebImage for async image loading with cache", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1011, "Swinject Dependency Injection", "Swinject provides powerful DI container",
+            "build", "Set up Swinject container for app-wide dependency management", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1012, "Firebase Cloud Messaging", "FCM enables cross-platform push notifications",
+            "build", "Integrate FCM for push notifications with custom data", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1013, "Memory Leak Detection", "Leaks cause crashes and poor performance",
+            "build", "Use Instruments and Memory Graph Debugger to find retain cycles", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1014, "Fastlane CI/CD Automation", "Automate builds, tests, and deployments",
+            "build", "Set up Fastlane lanes for testing, building, and deploying", 6, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1015, "Firebase Analytics Integration", "Analytics inform product decisions",
+            "build", "Track user events, screen views, and conversion funnels", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated iOS Developer path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+    
+
+    /**
+     * Android Developer Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1101-1115
+     */
+    private List<DetailedPathNode> generateAndroidDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Kotlin & Android Basics (1-7)
+        nodes.add(createNode(1, "Kotlin Fundamentals", "Kotlin is Google's modern language for Android",
+            "build", "Write Kotlin code using val/let, null safety, data classes, and extension functions", 4, 5, "foundational",
+            List.of(2), List.of(1101))); // → 2, comp: Kotlin vs Java
+    
+        nodes.add(createNode(2, "Kotlin Coroutines Basics", "Coroutines enable async programming in Kotlin",
+            "build", "Use launch, async, and suspend functions for asynchronous operations", 5, 4, "foundational",
+            List.of(3), List.of(1102))); // → 3, comp: Flow vs LiveData
+    
+        nodes.add(createNode(3, "Android Studio IDE", "Android Studio is the official Android development environment",
+            "probe", "Navigate Android Studio, use Layout Editor, manage Gradle builds", 3, 3, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "Android Activity Lifecycle", "Understanding lifecycle prevents memory leaks and crashes",
+            "probe", "Explain activity states: onCreate, onStart, onResume, onPause, onStop, onDestroy", 4, 3, "foundational",
+            List.of(5), List.of(1103))); // → 5, comp: Fragment lifecycle
+    
+        nodes.add(createNode(5, "Views & ViewGroups", "Views are the building blocks of Android UI",
+            "build", "Create layouts with LinearLayout, RelativeLayout, ConstraintLayout", 5, 6, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "RecyclerView Fundamentals", "RecyclerView efficiently displays large lists",
+            "build", "Build scrollable lists with RecyclerView, ViewHolder pattern, and adapters", 5, 5, "foundational",
+            List.of(7), List.of(1104))); // → 7, comp: DiffUtil optimization
+    
+        nodes.add(createNode(7, "Intents & Navigation", "Intents enable navigation between activities",
+            "build", "Use explicit and implicit intents, pass data between screens", 4, 4, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: Jetpack Compose & Modern Android (8-15)
+        nodes.add(createNode(8, "Jetpack Compose Basics", "Compose is Android's modern declarative UI framework",
+            "build", "Build UIs with Text, Image, Button, Column, Row using Compose", 5, 6, "core",
+            List.of(9), List.of(1105))); // → 9, comp: Compose vs XML
+    
+        nodes.add(createNode(9, "Compose State Management", "State and remember drive reactive UIs",
+            "build", "Use remember, mutableStateOf, derivedStateOf for UI state", 6, 5, "core",
+            List.of(10), List.of(1106))); // → 10, comp: ViewModel integration
+    
+        nodes.add(createNode(10, "Navigation in Compose", "Navigation component enables multi-screen apps",
+            "build", "Implement Navigation Compose with routes and arguments", 5, 4, "core",
+            List.of(11), List.of()));
+    
+        nodes.add(createNode(11, "LazyColumn & LazyRow", "Lazy layouts efficiently display scrollable content",
+            "build", "Build performant lists with LazyColumn and custom item layouts", 5, 5, "core",
+            List.of(12), List.of()));
+    
+        nodes.add(createNode(12, "Retrofit for Networking", "Retrofit is the standard Android HTTP client",
+            "build", "Make API calls with Retrofit, parse JSON with Gson/Moshi", 6, 6, "core",
+            List.of(13), List.of(1107))); // → 13, comp: OkHttp interceptors
+    
+        nodes.add(createNode(13, "Room Database", "Room provides SQLite abstraction for local data",
+            "build", "Define entities, DAOs, and database for local storage", 6, 7, "core",
+            List.of(14), List.of(1108))); // → 14, comp: DataStore vs SharedPreferences
+    
+        nodes.add(createNode(14, "WorkManager for Background Tasks", "WorkManager handles deferrable background work",
+            "build", "Schedule periodic and one-time work with constraints", 5, 5, "core",
+            List.of(15), List.of()));
+    
+        nodes.add(createNode(15, "Coil Image Loading", "Coil is the modern Kotlin-first image library",
+            "build", "Load remote images asynchronously with Coil in Compose", 4, 3, "core",
+            List.of(16), List.of(1109))); // → 16, comp: Glide vs Picasso
+    
+        // PHASE 3: Advanced Android (16-23)
+        nodes.add(createNode(16, "MVVM Architecture with ViewModel", "MVVM separates UI from business logic",
+            "build", "Implement Model-View-ViewModel pattern with Android ViewModel", 6, 6, "advanced",
+            List.of(17), List.of()));
+    
+        nodes.add(createNode(17, "Dependency Injection with Hilt", "Hilt provides compile-time DI for Android",
+            "build", "Set up Hilt modules, inject dependencies across app components", 6, 6, "advanced",
+            List.of(18), List.of(1110))); // → 18, comp: Dagger vs Koin
+    
+        nodes.add(createNode(18, "Unit Testing with JUnit & Mockk", "Tests ensure code quality and prevent regressions",
+            "build", "Write JUnit tests with Mockk for mocking dependencies", 5, 6, "advanced",
+            List.of(19), List.of()));
+    
+        nodes.add(createNode(19, "UI Testing with Espresso", "Espresso automates UI testing on Android",
+            "build", "Write Espresso tests for critical user flows", 5, 5, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Firebase Cloud Messaging", "FCM enables push notifications on Android",
+            "build", "Implement FCM, request permissions, handle notification payloads", 6, 6, "advanced",
+            List.of(21), List.of(1111))); // → 21, comp: Notification channels
+    
+        nodes.add(createNode(21, "Biometric Authentication", "Biometric APIs provide secure user authentication",
+            "build", "Implement fingerprint and face authentication using BiometricPrompt", 5, 4, "advanced",
+            List.of(22), List.of()));
+    
+        nodes.add(createNode(22, "ProGuard & R8 Optimization", "Code shrinking reduces APK size and improves security",
+            "build", "Configure R8 rules for code obfuscation and optimization", 5, 5, "advanced",
+            List.of(23), List.of()));
+    
+        nodes.add(createNode(23, "Android Profiler & Performance", "Profiling reveals CPU, memory, and network issues",
+            "build", "Use Android Profiler to diagnose performance bottlenecks", 6, 5, "advanced",
+            List.of(24), List.of(1112))); // → 24, comp: LeakCanary
+    
+        // PHASE 4: Production & Play Store (24-30)
+        nodes.add(createNode(24, "App Icon & Adaptive Icons", "Adaptive icons display consistently across devices",
+            "build", "Design app icon with foreground, background layers for all densities", 3, 3, "specialized",
+            List.of(25), List.of()));
+    
+        nodes.add(createNode(25, "Google Play Console", "Play Console manages app distribution and analytics",
+            "probe", "Navigate Play Console, create app listing, manage releases", 4, 4, "specialized",
+            List.of(26), List.of()));
+    
+        nodes.add(createNode(26, "App Signing & Play App Signing", "Signing ensures app authenticity and security",
+            "build", "Generate upload key, configure Play App Signing", 5, 5, "specialized",
+            List.of(27), List.of(1113))); // → 27, comp: APK vs AAB
+    
+        nodes.add(createNode(27, "Internal Testing & Closed Beta", "Testing tracks catch bugs before public release",
+            "build", "Upload AAB to internal testing, manage beta testers", 4, 3, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "Play Store Listing Optimization", "App listing affects discoverability and downloads",
+            "build", "Write compelling description, add screenshots and feature graphic", 4, 4, "specialized",
+            List.of(29), List.of()));
+    
+        nodes.add(createNode(29, "Firebase Crashlytics", "Crashlytics monitors production crashes in real-time",
+            "build", "Integrate Crashlytics, analyze crash reports and trends", 4, 4, "specialized",
+            List.of(30), List.of(1114))); // → 30, comp: Firebase Analytics
+    
+        nodes.add(createNode(30, "Play Store Submission", "Final step: publishing to billions of Android users",
+            "apply", "Submit app for review, respond to policy violations if needed", 5, 6, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1101-1115)
+        nodes.add(createNode(1101, "Kotlin vs Java for Android", "Understanding both languages aids legacy code maintenance",
+            "probe", "Compare Kotlin and Java syntax, null safety, and Android idioms", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1102, "Flow vs LiveData", "Choose the right reactive stream for your architecture",
+            "probe", "Compare Kotlin Flow and LiveData for UI state management", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1103, "Fragment Lifecycle Deep Dive", "Fragments have complex lifecycle interactions",
+            "probe", "Explain fragment lifecycle states and interaction with activity lifecycle", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1104, "DiffUtil & ListAdapter", "DiffUtil enables efficient RecyclerView updates",
+            "build", "Implement DiffUtil.Callback for animated list updates", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1105, "Compose vs XML Layouts", "Choose the right UI approach for your project",
+            "probe", "Compare Jetpack Compose and XML layouts for different use cases", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1106, "ViewModel & StateFlow Integration", "StateFlow provides lifecycle-aware state in MVVM",
+            "build", "Expose UI state from ViewModel using StateFlow and collectAsState", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1107, "OkHttp Interceptors", "Interceptors add headers, logging, and auth to requests",
+            "build", "Implement custom OkHttp interceptors for authentication and logging", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1108, "DataStore vs SharedPreferences", "DataStore is the modern preference storage solution",
+            "probe", "Compare Preferences DataStore, Proto DataStore, and SharedPreferences", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1109, "Glide vs Picasso vs Coil", "Choose the right image loading library",
+            "probe", "Compare Glide, Picasso, and Coil for image loading use cases", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1110, "Dagger vs Hilt vs Koin", "Different DI frameworks suit different needs",
+            "probe", "Compare compile-time DI (Dagger/Hilt) vs runtime DI (Koin)", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1111, "Notification Channels & Importance", "Android 8+ requires notification channels",
+            "build", "Create notification channels with different importance levels", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1112, "LeakCanary Memory Leak Detection", "LeakCanary automatically detects memory leaks",
+            "build", "Integrate LeakCanary and interpret leak traces", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1113, "APK vs AAB (App Bundle)", "App Bundles enable smaller downloads and dynamic delivery",
+            "probe", "Explain benefits of AAB over APK and dynamic feature modules", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1114, "Firebase Analytics & Events", "Analytics drive product decisions and growth",
+            "build", "Track custom events, user properties, and conversion funnels", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1115, "Material Design 3 (Material You)", "Material 3 provides modern Android design system",
+            "build", "Implement Material 3 theming with dynamic colors in Compose", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated Android Developer path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    
+    /**
+     * React Native Developer Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1201-1215
+     */
+    private List<DetailedPathNode> generateReactNativeDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: React & JavaScript Foundations (1-7)
+        nodes.add(createNode(1, "React Fundamentals for Mobile", "React's component model powers React Native",
+            "build", "Build functional components with props, state, and hooks", 4, 5, "foundational",
+            List.of(2), List.of(1201))); // → 2, comp: React vs React Native
+    
+        nodes.add(createNode(2, "JavaScript ES6+ Features", "Modern JavaScript enables cleaner React code",
+            "build", "Use arrow functions, destructuring, spread operator, and async/await", 4, 4, "foundational",
+            List.of(3), List.of(1202))); // → 3, comp: TypeScript for React Native
+    
+        nodes.add(createNode(3, "React Hooks Deep Dive", "Hooks manage state and lifecycle in functional components",
+            "build", "Master useState, useEffect, useContext, useReducer, useMemo, useCallback", 5, 5, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "React Native Environment Setup", "Proper environment prevents development issues",
+            "probe", "Set up React Native CLI, Xcode, Android Studio, and run on simulators", 3, 4, "foundational",
+            List.of(5), List.of()));
+    
+        nodes.add(createNode(5, "Core Components & Styling", "React Native provides cross-platform UI components",
+            "build", "Use View, Text, Image, ScrollView, FlatList with StyleSheet", 5, 6, "foundational",
+            List.of(6), List.of(1203))); // → 6, comp: Flexbox layout
+    
+        nodes.add(createNode(6, "Touchables & User Input", "Handling touch events enables interactive UIs",
+            "build", "Implement TouchableOpacity, TextInput, Switch, and gesture handling", 4, 4, "foundational",
+            List.of(7), List.of()));
+    
+        nodes.add(createNode(7, "React Navigation", "Navigation library enables multi-screen apps",
+            "build", "Implement stack, tab, and drawer navigation with React Navigation", 5, 6, "core",
+            List.of(8), List.of(1204))); // → 8, comp: Navigation patterns
+    
+        // PHASE 2: State Management & Data (8-15)
+        nodes.add(createNode(8, "Context API for Global State", "Context avoids prop drilling in large apps",
+            "build", "Create context providers for theme, auth, and app-wide state", 5, 4, "core",
+            List.of(9), List.of()));
+    
+        nodes.add(createNode(9, "Redux Toolkit for React Native", "Redux manages complex application state",
+            "build", "Set up Redux Toolkit with slices, async thunks, and middleware", 6, 6, "core",
+            List.of(10), List.of(1205))); // → 10, comp: Redux vs MobX
+    
+        nodes.add(createNode(10, "React Query for Data Fetching", "React Query handles server state elegantly",
+            "build", "Fetch, cache, and sync server data with React Query", 6, 5, "core",
+            List.of(11), List.of()));
+    
+        nodes.add(createNode(11, "Axios for API Calls", "Axios simplifies HTTP requests in React Native",
+            "build", "Make REST API calls with Axios interceptors and error handling", 5, 4, "core",
+            List.of(12), List.of(1206))); // → 12, comp: Fetch vs Axios
+    
+        nodes.add(createNode(12, "AsyncStorage for Persistence", "AsyncStorage provides key-value storage on device",
+            "build", "Store user preferences and cached data with AsyncStorage", 4, 3, "core",
+            List.of(13), List.of()));
+    
+        nodes.add(createNode(13, "Forms & Validation", "Robust forms improve user experience and data quality",
+            "build", "Build forms with React Hook Form and Yup validation", 5, 5, "core",
+            List.of(14), List.of(1207))); // → 14, comp: Formik alternative
+    
+        nodes.add(createNode(14, "Image Handling & FastImage", "Efficient image loading improves performance",
+            "build", "Load and cache images with react-native-fast-image", 4, 3, "core",
+            List.of(15), List.of()));
+    
+        nodes.add(createNode(15, "Push Notifications Setup", "Push notifications re-engage users across platforms",
+            "build", "Integrate Firebase Cloud Messaging for iOS and Android push notifications", 6, 6, "core",
+            List.of(16), List.of(1208))); // → 16, comp: Notification libraries
+    
+        // PHASE 3: Native Modules & Advanced (16-23)
+        nodes.add(createNode(16, "Linking Native Libraries", "React Native bridges to native iOS and Android code",
+            "build", "Link and configure native libraries with autolinking and manual setup", 5, 5, "advanced",
+            List.of(17), List.of()));
+    
+        nodes.add(createNode(17, "Writing Custom Native Modules", "Native modules access platform-specific APIs",
+            "build", "Create native modules in Swift/Objective-C and Kotlin/Java", 7, 8, "advanced",
+            List.of(18), List.of(1209))); // → 18, comp: Turbo Modules
+    
+        nodes.add(createNode(18, "Performance Optimization", "Profiling and optimization ensure smooth 60fps UIs",
+            "build", "Use React DevTools Profiler, Flipper, and optimize FlatList rendering", 6, 6, "advanced",
+            List.of(19), List.of(1210))); // → 19, comp: Hermes engine
+    
+        nodes.add(createNode(19, "Animations with Reanimated", "Reanimated 2 provides smooth native-thread animations",
+            "build", "Create complex animations with react-native-reanimated and gestures", 6, 7, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Testing with Jest & Testing Library", "Tests prevent regressions and document behavior",
+            "build", "Write unit and integration tests with Jest and React Native Testing Library", 5, 6, "advanced",
+            List.of(21), List.of(1211))); // → 21, comp: Detox E2E testing
+    
+        nodes.add(createNode(21, "Deep Linking & Universal Links", "Deep links enable navigation from web and other apps",
+            "build", "Configure deep linking for iOS and Android with URL schemes", 5, 5, "advanced",
+            List.of(22), List.of()));
+    
+        nodes.add(createNode(22, "Secure Storage & Keychain", "Sensitive data requires encrypted storage",
+            "build", "Store tokens and credentials with react-native-keychain", 5, 4, "advanced",
+            List.of(23), List.of(1212))); // → 23, comp: Biometric auth
+    
+        nodes.add(createNode(23, "Error Boundaries & Crash Reporting", "Production apps need robust error handling",
+            "build", "Implement error boundaries and integrate Sentry for crash reporting", 5, 5, "advanced",
+            List.of(24), List.of()));
+    
+        // PHASE 4: Production & Deployment (24-30)
+        nodes.add(createNode(24, "App Icons & Splash Screens", "Branding assets create professional first impressions",
+            "build", "Generate app icons and splash screens for iOS and Android", 3, 3, "specialized",
+            List.of(25), List.of()));
+    
+        nodes.add(createNode(25, "Environment Configuration", "Different environments require different API keys and configs",
+            "build", "Set up dev, staging, and production environments with react-native-config", 4, 4, "specialized",
+            List.of(26), List.of(1213))); // → 26, comp: Build variants
+    
+        nodes.add(createNode(26, "iOS Build & Fastlane", "Automating iOS builds saves time and reduces errors",
+            "build", "Configure Fastlane for iOS code signing, building, and TestFlight upload", 6, 6, "specialized",
+            List.of(27), List.of()));
+    
+        nodes.add(createNode(27, "Android Build & Play Store", "Android builds require signing and AAB generation",
+            "build", "Generate signed AAB, configure Play App Signing, upload to Play Console", 6, 6, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "Over-The-Air Updates", "OTA updates deploy fixes without app store review",
+            "build", "Implement CodePush or Expo Updates for instant updates", 5, 5, "specialized",
+            List.of(29), List.of(1214))); // → 29, comp: CodePush vs EAS Update
+    
+        nodes.add(createNode(29, "Analytics & Performance Monitoring", "Production monitoring informs product decisions",
+            "build", "Integrate Firebase Analytics and Performance Monitoring", 4, 4, "specialized",
+            List.of(30), List.of()));
+    
+        nodes.add(createNode(30, "App Store & Play Store Submission", "Final step: publishing to millions on both platforms",
+            "apply", "Submit to App Store and Play Store, respond to review feedback", 5, 6, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1201-1215)
+        nodes.add(createNode(1201, "React vs React Native Differences", "Understanding differences prevents common mistakes",
+            "probe", "Explain DOM vs native components, styling differences, and platform APIs", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1202, "TypeScript for React Native", "TypeScript adds type safety to JavaScript",
+            "build", "Set up TypeScript, define component prop types and state interfaces", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1203, "Flexbox Layout Deep Dive", "Flexbox is the primary layout system in React Native",
+            "build", "Master flexDirection, justifyContent, alignItems for responsive layouts", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1204, "Navigation Patterns & Best Practices", "Proper navigation architecture scales well",
+            "probe", "Compare stack, tab, drawer navigation patterns and nesting strategies", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1205, "Redux vs MobX vs Zustand", "Different state management libraries suit different needs",
+            "probe", "Compare Redux Toolkit, MobX, and Zustand for React Native apps", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1206, "Fetch API vs Axios", "Choose the right HTTP client for your needs",
+            "probe", "Compare native Fetch API and Axios for API requests", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1207, "Formik Alternative Comparison", "Multiple form libraries exist for React Native",
+            "probe", "Compare React Hook Form, Formik, and uncontrolled forms", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1208, "Push Notification Libraries", "Different libraries offer different features",
+            "probe", "Compare react-native-firebase, Notifee, and OneSignal", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1209, "Turbo Modules & New Architecture", "React Native's new architecture improves performance",
+            "probe", "Explain Turbo Modules, Fabric renderer, and migration path", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1210, "Hermes JavaScript Engine", "Hermes reduces app size and improves startup time",
+            "probe", "Explain Hermes benefits, bytecode compilation, and when to use it", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1211, "Detox End-to-End Testing", "E2E tests validate entire user flows on real devices",
+            "build", "Write Detox tests for critical user journeys on iOS and Android", 6, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1212, "Biometric Authentication", "Fingerprint and face unlock improve UX and security",
+            "build", "Implement biometric authentication with react-native-biometrics", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1213, "Build Variants & Schemes", "Different builds for development, staging, production",
+            "build", "Configure Xcode schemes and Android build variants", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1214, "CodePush vs EAS Update", "OTA update solutions have different trade-offs",
+            "probe", "Compare Microsoft CodePush and Expo EAS Update features and pricing", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1215, "Expo vs React Native CLI", "Managed vs bare workflow trade-offs",
+            "probe", "Compare Expo managed workflow, Expo bare workflow, and React Native CLI", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated React Native Developer path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    
+    /**
+     * Flutter Developer Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1301-1315
+     */
+    private List<DetailedPathNode> generateFlutterDeveloperPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Dart & Flutter Basics (1-7)
+        nodes.add(createNode(1, "Dart Programming Language", "Dart is the foundation of Flutter development",
+            "build", "Write Dart code with strong typing, async/await, collections, and null safety", 4, 5, "foundational",
+            List.of(2), List.of(1301))); // → 2, comp: Dart vs JavaScript
+    
+        nodes.add(createNode(2, "Object-Oriented Dart", "OOP principles structure Flutter applications",
+            "build", "Use classes, inheritance, mixins, abstract classes, and interfaces", 5, 4, "foundational",
+            List.of(3), List.of(1302))); // → 3, comp: Mixins vs inheritance
+    
+        nodes.add(createNode(3, "Flutter Environment Setup", "Proper setup ensures smooth cross-platform development",
+            "probe", "Install Flutter SDK, configure VS Code/Android Studio, run on all platforms", 3, 3, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "Widget Tree Fundamentals", "Everything in Flutter is a widget",
+            "probe", "Understand widget tree, element tree, and render tree architecture", 4, 3, "foundational",
+            List.of(5), List.of(1303))); // → 5, comp: StatelessWidget vs StatefulWidget
+    
+        nodes.add(createNode(5, "Layout Widgets", "Layout widgets organize UI structure",
+            "build", "Use Container, Row, Column, Stack, Expanded, Flexible for layouts", 5, 6, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "Material & Cupertino Widgets", "Flutter provides both Android and iOS design systems",
+            "build", "Build UIs with Material Design and iOS-style Cupertino widgets", 5, 5, "foundational",
+            List.of(7), List.of(1304))); // → 7, comp: Adaptive widgets
+    
+        nodes.add(createNode(7, "Navigation & Routing", "Navigator enables multi-screen Flutter apps",
+            "build", "Implement navigation with Navigator, named routes, and route arguments", 5, 5, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: State Management & Data (8-15)
+        nodes.add(createNode(8, "Stateful Widgets & setState", "setState is the simplest state management approach",
+            "build", "Manage local widget state with StatefulWidget and setState", 4, 4, "core",
+            List.of(9), List.of()));
+    
+        nodes.add(createNode(9, "InheritedWidget & Provider", "Provider simplifies state propagation down the widget tree",
+            "build", "Use Provider for dependency injection and state management", 6, 5, "core",
+            List.of(10), List.of(1305))); // → 10, comp: Provider vs Riverpod
+    
+        nodes.add(createNode(10, "Riverpod State Management", "Riverpod is compile-safe Provider with better testing",
+            "build", "Implement app state with Riverpod providers and consumers", 6, 6, "core",
+            List.of(11), List.of()));
+    
+        nodes.add(createNode(11, "HTTP Requests with Dio", "Dio is the powerful HTTP client for Flutter",
+            "build", "Make REST API calls with Dio interceptors, error handling, and retries", 5, 5, "core",
+            List.of(12), List.of(1306))); // → 12, comp: http package vs Dio
+    
+        nodes.add(createNode(12, "JSON Serialization", "Convert JSON to Dart objects for type safety",
+            "build", "Use json_serializable for automatic JSON parsing and code generation", 5, 4, "core",
+            List.of(13), List.of()));
+    
+        nodes.add(createNode(13, "Local Storage with SharedPreferences", "SharedPreferences stores simple key-value data",
+            "build", "Persist user preferences and settings with shared_preferences", 4, 3, "core",
+            List.of(14), List.of()));
+    
+        nodes.add(createNode(14, "SQLite with sqflite", "sqflite provides local database storage",
+            "build", "Create database, define schemas, perform CRUD operations with sqflite", 6, 6, "core",
+            List.of(15), List.of(1307))); // → 15, comp: Hive vs sqflite
+    
+        nodes.add(createNode(15, "Forms & Validation", "Flutter forms collect and validate user input",
+            "build", "Build forms with TextFormField, Form widget, and custom validators", 5, 5, "core",
+            List.of(16), List.of()));
+    
+        // PHASE 3: Advanced Flutter (16-23)
+        nodes.add(createNode(16, "Streams & Reactive Programming", "Streams handle asynchronous data sequences",
+            "build", "Use StreamBuilder, StreamController, and rxdart for reactive UIs", 6, 6, "advanced",
+            List.of(17), List.of(1308))); // → 17, comp: BLoC pattern
+    
+        nodes.add(createNode(17, "BLoC Architecture Pattern", "BLoC separates business logic from UI",
+            "build", "Implement BLoC pattern with flutter_bloc for scalable architecture", 7, 7, "advanced",
+            List.of(18), List.of()));
+    
+        nodes.add(createNode(18, "Custom Painters & Canvas", "CustomPaint enables custom graphics and animations",
+            "build", "Draw custom shapes and graphics using Canvas API", 6, 6, "advanced",
+            List.of(19), List.of(1309))); // → 19, comp: Animation types
+    
+        nodes.add(createNode(19, "Implicit & Explicit Animations", "Animations bring UIs to life",
+            "build", "Create animations with AnimatedContainer, AnimationController, Tween", 6, 6, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Platform Channels", "Platform channels bridge Flutter to native code",
+            "build", "Call native iOS/Android APIs using MethodChannel and EventChannel", 7, 7, "advanced",
+            List.of(21), List.of(1310))); // → 21, comp: FFI for C libraries
+    
+        nodes.add(createNode(21, "Testing in Flutter", "Tests ensure code quality across platforms",
+            "build", "Write unit tests, widget tests, and integration tests", 6, 7, "advanced",
+            List.of(22), List.of(1311))); // → 22, comp: Golden tests
+    
+        nodes.add(createNode(22, "Firebase Integration", "Firebase provides backend services for Flutter",
+            "build", "Integrate Firebase Auth, Firestore, Cloud Messaging, and Analytics", 6, 7, "advanced",
+            List.of(23), List.of()));
+    
+        nodes.add(createNode(23, "Performance Optimization", "Profiling reveals performance bottlenecks",
+            "build", "Use Flutter DevTools to profile rendering, memory, and network performance", 6, 6, "advanced",
+            List.of(24), List.of(1312))); // → 24, comp: const constructors
+    
+        // PHASE 4: Production & Multi-platform (24-30)
+        nodes.add(createNode(24, "App Icons & Splash Screens", "flutter_launcher_icons automates icon generation",
+            "build", "Generate adaptive icons and splash screens for all platforms", 3, 3, "specialized",
+            List.of(25), List.of()));
+    
+        nodes.add(createNode(25, "Flavors & Environment Config", "Flavors enable multiple app variants",
+            "build", "Configure dev, staging, prod flavors for iOS and Android", 5, 5, "specialized",
+            List.of(26), List.of(1313))); // → 26, comp: Build modes
+    
+        nodes.add(createNode(26, "iOS Build & App Store", "Building for iOS requires Xcode and certificates",
+            "build", "Configure Xcode project, code signing, build IPA, upload to TestFlight", 6, 6, "specialized",
+            List.of(27), List.of()));
+    
+        nodes.add(createNode(27, "Android Build & Play Store", "Android builds generate AAB for Play Store",
+            "build", "Configure signing, build AAB, upload to Play Console with app bundle", 6, 6, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "Web & Desktop Deployment", "Flutter supports web, Windows, macOS, and Linux",
+            "build", "Build and deploy Flutter apps to web and desktop platforms", 5, 5, "specialized",
+            List.of(29), List.of(1314))); // → 29, comp: Platform-specific code
+    
+        nodes.add(createNode(29, "Crash Reporting & Analytics", "Production monitoring informs product decisions",
+            "build", "Integrate Firebase Crashlytics and Analytics for production monitoring", 4, 4, "specialized",
+            List.of(30), List.of()));
+    
+        nodes.add(createNode(30, "Multi-platform App Submission", "Final step: publishing to all app stores",
+            "apply", "Submit Flutter app to App Store, Play Store, and web hosting", 5, 6, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1301-1315)
+        nodes.add(createNode(1301, "Dart vs JavaScript/TypeScript", "Understanding language differences aids migration",
+            "probe", "Compare Dart and JavaScript/TypeScript syntax, typing, and async models", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1302, "Mixins vs Inheritance", "Mixins enable code reuse without deep hierarchies",
+            "probe", "Explain when to use mixins vs inheritance in Dart", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1303, "StatelessWidget vs StatefulWidget", "Choose the right widget type for your UI",
+            "probe", "Compare stateless and stateful widgets, lifecycle methods, and use cases", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1304, "Adaptive & Platform-Aware Widgets", "Build apps that feel native on each platform",
+            "build", "Create adaptive UIs that adapt to iOS, Android, and platform conventions", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1305, "Provider vs Riverpod vs GetX", "Different state management solutions for different needs",
+            "probe", "Compare Provider, Riverpod, GetX, and BLoC for state management", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1306, "http Package vs Dio", "Choose the right HTTP client for your needs",
+            "probe", "Compare built-in http package and Dio for API requests", 3, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1307, "Hive vs sqflite vs Drift", "Different local storage solutions for different use cases",
+            "probe", "Compare Hive (NoSQL), sqflite (SQLite), and Drift (type-safe SQL)", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1308, "BLoC Pattern Deep Dive", "BLoC provides predictable state management",
+            "build", "Implement full BLoC pattern with events, states, and repositories", 7, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1309, "Animation Types & Controllers", "Different animations for different effects",
+            "probe", "Compare implicit, explicit, hero, and physics-based animations", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1310, "FFI for C/C++ Libraries", "FFI enables calling native C/C++ code",
+            "build", "Use dart:ffi to call C libraries directly from Dart", 7, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1311, "Golden Image Tests", "Golden tests catch visual regressions",
+            "build", "Write golden tests to validate widget rendering across changes", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1312, "const Constructors & Performance", "const widgets reduce rebuilds and improve performance",
+            "probe", "Explain const constructors, const widgets, and when to use them", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1313, "Debug vs Profile vs Release Modes", "Build modes affect performance and debugging",
+            "probe", "Explain differences between debug, profile, and release build modes", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1314, "Platform-Specific Code Organization", "Conditional imports keep code clean",
+            "build", "Organize platform-specific code with conditional imports and abstract classes", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1315, "Flutter for Web Considerations", "Web builds have different constraints than mobile",
+            "probe", "Explain web-specific considerations: SEO, routing, canvas vs HTML renderer", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated Flutter Developer path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    
+    /**
+     * Site Reliability Engineer (SRE) Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1401-1415
+     */
+    private List<DetailedPathNode> generateSREPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Foundations & Linux (1-7)
+        nodes.add(createNode(1, "SRE Principles & Philosophy", "SRE bridges software engineering and operations",
+            "probe", "Explain error budgets, toil reduction, SLIs/SLOs/SLAs, and blameless postmortems", 4, 4, "foundational",
+            List.of(2), List.of(1401))); // → 2, comp: SRE vs DevOps
+    
+        nodes.add(createNode(2, "Linux System Administration", "Linux powers most production infrastructure",
+            "build", "Manage processes, filesystems, permissions, users, and system services", 5, 6, "foundational",
+            List.of(3), List.of(1402))); // → 3, comp: systemd deep dive
+    
+        nodes.add(createNode(3, "Bash Scripting for Automation", "Shell scripts automate repetitive operations tasks",
+            "build", "Write bash scripts with loops, conditionals, functions, and error handling", 5, 5, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "Networking Fundamentals", "Understanding networks enables troubleshooting production issues",
+            "probe", "Explain TCP/IP, DNS, HTTP/HTTPS, load balancing, and CDNs", 5, 5, "foundational",
+            List.of(5), List.of(1403))); // → 5, comp: OSI model
+    
+        nodes.add(createNode(5, "Git for Infrastructure", "Version control tracks infrastructure changes",
+            "build", "Use Git for version controlling configs, scripts, and infrastructure code", 4, 3, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "Python for SRE", "Python is the lingua franca of SRE automation",
+            "build", "Write Python scripts for system automation, API calls, and data processing", 5, 6, "foundational",
+            List.of(7), List.of(1404))); // → 7, comp: Go for infrastructure
+    
+        nodes.add(createNode(7, "SQL & Database Basics", "Databases store application state and require monitoring",
+            "build", "Query databases, understand indexes, transactions, and basic tuning", 5, 4, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: Containers & Orchestration (8-15)
+        nodes.add(createNode(8, "Docker Fundamentals", "Containers provide consistent environments across all stages",
+            "build", "Build Docker images, manage containers, understand layers and registries", 6, 6, "core",
+            List.of(9), List.of(1405))); // → 9, comp: Docker vs containerd
+    
+        nodes.add(createNode(9, "Kubernetes Architecture", "K8s orchestrates containers at scale",
+            "probe", "Explain pods, services, deployments, namespaces, and control plane components", 6, 6, "core",
+            List.of(10), List.of(1406))); // → 10, comp: K8s alternatives
+    
+        nodes.add(createNode(10, "Kubernetes Deployments & Services", "Deploy and expose applications in K8s",
+            "build", "Create deployments, services, ingress, and manage rolling updates", 6, 7, "core",
+            List.of(11), List.of()));
+    
+        nodes.add(createNode(11, "ConfigMaps & Secrets", "Manage configuration and sensitive data in K8s",
+            "build", "Use ConfigMaps for config, Secrets for credentials, and volume mounts", 5, 4, "core",
+            List.of(12), List.of(1407))); // → 12, comp: External Secrets Operator
+    
+        nodes.add(createNode(12, "Helm Package Manager", "Helm simplifies K8s application deployment",
+            "build", "Create Helm charts, manage releases, and use templating", 5, 5, "core",
+            List.of(13), List.of()));
+    
+        nodes.add(createNode(13, "Kubernetes Monitoring & Logging", "Observability is critical for K8s reliability",
+            "build", "Set up logging with Fluentd, monitoring with Prometheus, and dashboards", 6, 6, "core",
+            List.of(14), List.of(1408))); // → 14, comp: ELK vs Loki
+    
+        nodes.add(createNode(14, "Pod Autoscaling & Resource Management", "Autoscaling handles variable load",
+            "build", "Configure HPA, VPA, resource requests/limits, and cluster autoscaling", 6, 6, "core",
+            List.of(15), List.of()));
+    
+        nodes.add(createNode(15, "Service Mesh with Istio", "Service meshes provide observability and traffic control",
+            "build", "Deploy Istio for traffic management, security, and distributed tracing", 7, 7, "core",
+            List.of(16), List.of(1409))); // → 16, comp: Linkerd vs Istio
+    
+        // PHASE 3: Cloud & Infrastructure as Code (16-23)
+        nodes.add(createNode(16, "AWS Fundamentals", "AWS is the dominant cloud platform",
+            "build", "Use EC2, S3, RDS, VPC, IAM, and understand the well-architected framework", 6, 7, "advanced",
+            List.of(17), List.of(1410))); // → 17, comp: Multi-cloud comparison
+    
+        nodes.add(createNode(17, "Terraform Infrastructure as Code", "Terraform declaratively provisions cloud resources",
+            "build", "Write Terraform configs, manage state, use modules and workspaces", 6, 7, "advanced",
+            List.of(18), List.of(1411))); // → 18, comp: Terraform vs Pulumi
+    
+        nodes.add(createNode(18, "CI/CD Pipelines", "Automated pipelines enable rapid, reliable deployments",
+            "build", "Build CI/CD with GitHub Actions, GitLab CI, or Jenkins for automated testing and deployment", 6, 7, "advanced",
+            List.of(19), List.of()));
+    
+        nodes.add(createNode(19, "GitOps with ArgoCD", "GitOps uses Git as the source of truth for infrastructure",
+            "build", "Implement GitOps workflows with ArgoCD for K8s deployments", 6, 6, "advanced",
+            List.of(20), List.of(1412))); // → 20, comp: FluxCD alternative
+    
+        nodes.add(createNode(20, "Observability & APM", "Full observability requires metrics, logs, and traces",
+            "build", "Implement distributed tracing with Jaeger/Tempo and APM with Datadog/New Relic", 6, 7, "advanced",
+            List.of(21), List.of()));
+    
+        nodes.add(createNode(21, "Incident Management", "Incidents are inevitable; response quality matters",
+            "build", "Set up on-call rotation, runbooks, incident response, and postmortems", 5, 5, "advanced",
+            List.of(22), List.of(1413))); // → 22, comp: PagerDuty vs Opsgenie
+    
+        nodes.add(createNode(22, "Chaos Engineering", "Chaos testing builds confidence in system resilience",
+            "build", "Implement chaos experiments with Chaos Mesh or Gremlin to test failure scenarios", 6, 6, "advanced",
+            List.of(23), List.of()));
+    
+        nodes.add(createNode(23, "Cost Optimization", "Cloud costs can spiral; optimization is essential",
+            "build", "Analyze cloud spend, right-size resources, use spot/reserved instances, implement FinOps", 5, 5, "advanced",
+            List.of(24), List.of(1414))); // → 24, comp: FinOps practices
+    
+        // PHASE 4: Advanced SRE & Leadership (24-30)
+        nodes.add(createNode(24, "Disaster Recovery & Backup", "DR plans protect against catastrophic failures",
+            "build", "Design backup strategies, test recovery procedures, and document RPO/RTO", 6, 6, "specialized",
+            List.of(25), List.of()));
+    
+        nodes.add(createNode(25, "Security & Compliance", "SREs are responsible for security posture",
+            "build", "Implement security scanning, vulnerability management, and compliance automation", 6, 6, "specialized",
+            List.of(26), List.of()));
+    
+        nodes.add(createNode(26, "Performance Engineering", "Performance optimization requires methodical analysis",
+            "build", "Profile applications, optimize databases, tune caching, reduce latency", 7, 7, "specialized",
+            List.of(27), List.of(1415))); // → 27, comp: Load testing tools
+    
+        nodes.add(createNode(27, "Capacity Planning", "Predict and provision for future growth",
+            "build", "Analyze trends, forecast capacity needs, and plan infrastructure scaling", 6, 6, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "SLI/SLO Engineering", "SLOs quantify reliability and guide error budgets",
+            "build", "Define meaningful SLIs, set realistic SLOs, and implement error budget policies", 6, 6, "specialized",
+            List.of(29), List.of()));
+    
+        nodes.add(createNode(29, "Toil Automation & Elimination", "Reducing toil is core to SRE effectiveness",
+            "build", "Identify toil, automate repetitive tasks, and measure toil reduction impact", 5, 5, "specialized",
+            List.of(30), List.of()));
+    
+        nodes.add(createNode(30, "SRE Team Building & Culture", "Building SRE culture transforms organizations",
+            "apply", "Establish SRE practices, mentor teams, drive blameless culture, and scale reliability", 6, 7, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1401-1415)
+        nodes.add(createNode(1401, "SRE vs DevOps vs Platform Engineering", "Understanding differences clarifies role expectations",
+            "probe", "Compare SRE, DevOps, and Platform Engineering philosophies and practices", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1402, "systemd Service Management", "systemd is the standard init system for modern Linux",
+            "build", "Create systemd units, manage services, understand timers and targets", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1403, "OSI Model & Network Troubleshooting", "Layer-by-layer approach debugs network issues",
+            "probe", "Explain OSI layers and use tools like tcpdump, netstat, traceroute for debugging", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1404, "Go for Infrastructure Tools", "Go is popular for building infrastructure tooling",
+            "build", "Write Go programs for CLI tools, API servers, and system utilities", 6, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1405, "Docker vs containerd vs CRI-O", "Different container runtimes for different needs",
+            "probe", "Compare Docker, containerd, and CRI-O for production use", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1406, "Kubernetes Alternatives: ECS, Nomad, Swarm", "K8s isn't always the right choice",
+            "probe", "Compare Kubernetes, AWS ECS, HashiCorp Nomad, and Docker Swarm", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1407, "External Secrets Operator", "Manage secrets from external vaults in K8s",
+            "build", "Integrate External Secrets Operator with AWS Secrets Manager or Vault", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1408, "ELK vs Loki vs Splunk", "Different logging solutions for different scales",
+            "probe", "Compare Elasticsearch/Logstash/Kibana, Loki, and Splunk for log aggregation", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1409, "Linkerd vs Istio Service Meshes", "Choose the right service mesh for your needs",
+            "probe", "Compare Linkerd and Istio complexity, features, and performance", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1410, "Multi-cloud: AWS vs GCP vs Azure", "Multi-cloud strategies reduce vendor lock-in",
+            "probe", "Compare AWS, GCP, and Azure services, pricing, and use cases", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1411, "Terraform vs Pulumi vs CloudFormation", "Different IaC tools for different needs",
+            "probe", "Compare Terraform HCL, Pulumi (real languages), and CloudFormation", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1412, "FluxCD vs ArgoCD", "Both implement GitOps but with different approaches",
+            "probe", "Compare FluxCD and ArgoCD for GitOps workflows", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1413, "PagerDuty vs Opsgenie vs VictorOps", "Incident management platforms reduce MTTR",
+            "probe", "Compare incident management tools and on-call best practices", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1414, "FinOps Practices", "FinOps brings financial accountability to cloud",
+            "probe", "Explain FinOps principles, cost allocation, and optimization strategies", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1415, "Load Testing: k6 vs Locust vs JMeter", "Load testing validates performance under stress",
+            "build", "Perform load tests with k6, Locust, or JMeter and analyze results", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated SRE path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    
+    /**
+     * Platform Engineer Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1501-1515
+     */
+    private List<DetailedPathNode> generatePlatformEngineerPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Foundations & Developer Experience (1-7)
+        nodes.add(createNode(1, "Platform Engineering Philosophy", "Platform engineering builds golden paths for developers",
+            "probe", "Explain platform thinking, self-service, developer experience, and platform as a product", 4, 4, "foundational",
+            List.of(2), List.of(1501))); // → 2, comp: Platform vs DevOps
+    
+        nodes.add(createNode(2, "Internal Developer Platforms (IDPs)", "IDPs abstract infrastructure complexity",
+            "probe", "Understand IDP components: service catalog, CI/CD, observability, security, governance", 5, 5, "foundational",
+            List.of(3), List.of(1502))); // → 3, comp: Buy vs build platforms
+    
+        nodes.add(createNode(3, "Developer Portal with Backstage", "Backstage unifies tooling and documentation",
+            "build", "Deploy Backstage, create software templates, integrate plugins for unified developer portal", 6, 6, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "Infrastructure as Code Foundations", "IaC enables reproducible infrastructure",
+            "build", "Master Terraform for cloud resources, understand state management and modules", 6, 6, "foundational",
+            List.of(5), List.of(1503))); // → 5, comp: Terraform vs Crossplane
+    
+        nodes.add(createNode(5, "Kubernetes for Platforms", "K8s is the foundation of modern platforms",
+            "build", "Deploy production K8s clusters, understand operators, CRDs, and admission controllers", 7, 7, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "API Design for Platforms", "Platform APIs enable self-service",
+            "build", "Design REST and GraphQL APIs, implement versioning, authentication, and rate limiting", 5, 6, "foundational",
+            List.of(7), List.of(1504))); // → 7, comp: API gateways
+    
+        nodes.add(createNode(7, "Platform Documentation", "Great docs are critical for platform adoption",
+            "build", "Write technical documentation, runbooks, and getting-started guides with docs-as-code", 4, 4, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: Self-Service & Automation (8-15)
+        nodes.add(createNode(8, "GitOps for Platform Management", "GitOps provides declarative platform configuration",
+            "build", "Implement GitOps with ArgoCD or FluxCD for platform component management", 6, 6, "core",
+            List.of(9), List.of(1505))); // → 9, comp: Push vs pull deployments
+    
+        nodes.add(createNode(9, "Service Templates & Scaffolding", "Templates accelerate app development with best practices",
+            "build", "Create Cookiecutter or Backstage templates for microservices, frontend, and data pipelines", 6, 6, "core",
+            List.of(10), List.of()));
+    
+        nodes.add(createNode(10, "Secrets Management", "Centralized secrets management improves security",
+            "build", "Implement HashiCorp Vault or AWS Secrets Manager with dynamic secrets and rotation", 6, 6, "core",
+            List.of(11), List.of(1506))); // → 11, comp: Sealed Secrets
+    
+        nodes.add(createNode(11, "Container Registry & Artifact Management", "Centralized artifact storage enables reuse",
+            "build", "Set up Harbor or Artifactory for container images, Helm charts, and build artifacts", 5, 5, "core",
+            List.of(12), List.of()));
+    
+        nodes.add(createNode(12, "CI/CD Platform Design", "Standardized pipelines reduce toil",
+            "build", "Build reusable pipeline templates with GitHub Actions, GitLab CI, or Tekton", 6, 7, "core",
+            List.of(13), List.of(1507))); // → 13, comp: Jenkins vs cloud-native CI
+    
+        nodes.add(createNode(13, "Policy as Code", "Automate compliance and governance",
+            "build", "Implement OPA (Open Policy Agent) for Kubernetes admission control and Terraform validation", 6, 6, "core",
+            List.of(14), List.of()));
+    
+        nodes.add(createNode(14, "Multi-tenancy Architecture", "Isolate teams while sharing infrastructure",
+            "build", "Design namespace-based or cluster-based multi-tenancy with resource quotas and network policies", 7, 7, "core",
+            List.of(15), List.of(1508))); // → 15, comp: Virtual clusters
+    
+        nodes.add(createNode(15, "Service Mesh Integration", "Service meshes provide traffic management and security",
+            "build", "Deploy Istio or Linkerd for mTLS, traffic splitting, and observability", 7, 7, "core",
+            List.of(16), List.of()));
+    
+        // PHASE 3: Observability & Developer Tools (16-23)
+        nodes.add(createNode(16, "Platform Observability Stack", "Platform teams need visibility into platform health",
+            "build", "Deploy Prometheus, Grafana, Loki for metrics, dashboards, and logs aggregation", 6, 7, "advanced",
+            List.of(17), List.of(1509))); // → 17, comp: OpenTelemetry
+    
+        nodes.add(createNode(17, "Distributed Tracing", "Traces debug microservice performance issues",
+            "build", "Implement Jaeger or Tempo with OpenTelemetry for distributed tracing", 6, 6, "advanced",
+            List.of(18), List.of()));
+    
+        nodes.add(createNode(18, "Cost Visibility & Showback", "Cost transparency drives efficient resource usage",
+            "build", "Implement Kubecost or OpenCost for per-team cost allocation and showback", 5, 5, "advanced",
+            List.of(19), List.of(1510))); // → 19, comp: FinOps for platforms
+    
+        nodes.add(createNode(19, "Developer Productivity Metrics", "DORA metrics quantify platform effectiveness",
+            "build", "Track deployment frequency, lead time, MTTR, and change failure rate", 5, 5, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Internal CLI Tools", "CLIs enable scriptable platform interactions",
+            "build", "Build internal CLI tools with Go or Python using cobra, click, or typer", 6, 6, "advanced",
+            List.of(21), List.of(1511))); // → 21, comp: CLI design patterns
+    
+        nodes.add(createNode(21, "Platform APIs & SDKs", "APIs and SDKs enable programmatic platform access",
+            "build", "Build platform APIs with FastAPI or Go, generate SDKs for multiple languages", 6, 7, "advanced",
+            List.of(22), List.of()));
+    
+        nodes.add(createNode(22, "Database as a Service (DBaaS)", "Managed databases reduce operational burden",
+            "build", "Build DBaaS for PostgreSQL, MySQL, Redis using Kubernetes operators", 7, 8, "advanced",
+            List.of(23), List.of(1512))); // → 23, comp: CloudNativePG operator
+    
+        nodes.add(createNode(23, "Platform Security & Compliance", "Security must be built into the platform",
+            "build", "Implement RBAC, pod security policies, vulnerability scanning, and SBOM generation", 6, 7, "advanced",
+            List.of(24), List.of()));
+    
+        // PHASE 4: Scaling & Platform Maturity (24-30)
+        nodes.add(createNode(24, "Disaster Recovery for Platforms", "Platform DR protects entire organizations",
+            "build", "Design multi-region platform architecture with backup, restore, and failover procedures", 7, 8, "specialized",
+            List.of(25), List.of(1513))); // → 25, comp: Velero backups
+    
+        nodes.add(createNode(25, "Platform Performance & Capacity", "Platform bottlenecks affect all teams",
+            "build", "Profile platform components, optimize control planes, plan capacity for growth", 7, 7, "specialized",
+            List.of(26), List.of()));
+    
+        nodes.add(createNode(26, "Platform Versioning & Upgrades", "Safe upgrades prevent platform-wide outages",
+            "build", "Design upgrade strategies, test compatibility, implement blue-green platform updates", 6, 7, "specialized",
+            List.of(27), List.of()));
+    
+        nodes.add(createNode(27, "Developer Feedback Loops", "Platform improves through user feedback",
+            "build", "Establish feedback channels, conduct user interviews, track platform satisfaction scores", 5, 5, "specialized",
+            List.of(28), List.of(1514))); // → 28, comp: Platform metrics
+    
+        nodes.add(createNode(28, "Platform as a Product", "Treating platforms as products drives adoption",
+            "probe", "Apply product thinking: roadmaps, user research, feature prioritization, and marketing", 5, 5, "specialized",
+            List.of(29), List.of()));
+    
+        nodes.add(createNode(29, "Cross-functional Platform Teams", "Platform teams combine diverse expertise",
+            "build", "Build teams with SRE, backend, frontend, and product skills for platform development", 5, 5, "specialized",
+            List.of(30), List.of()));
+    
+        nodes.add(createNode(30, "Platform Engineering Culture", "Sustainable platforms require organizational change",
+            "apply", "Drive platform adoption, measure success, scale platform team, and establish platform community", 6, 7, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1501-1515)
+        nodes.add(createNode(1501, "Platform Engineering vs DevOps vs SRE", "Distinct roles with overlapping skills",
+            "probe", "Compare platform engineering, DevOps, and SRE responsibilities and focus areas", 4, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1502, "Buy vs Build Platform Decisions", "Build vs buy affects platform strategy",
+            "probe", "Analyze build vs buy trade-offs for platform components and managed services", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1503, "Terraform vs Crossplane vs Pulumi", "Different IaC tools for platform needs",
+            "probe", "Compare Terraform, Crossplane (K8s-native), and Pulumi for platform IaC", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1504, "API Gateway Patterns", "Gateways centralize API management",
+            "build", "Implement Kong, Ambassador, or AWS API Gateway for platform APIs", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1505, "Push vs Pull Deployment Models", "GitOps pulls; traditional CI pushes",
+            "probe", "Compare push-based (Jenkins) vs pull-based (ArgoCD) deployment models", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1506, "Sealed Secrets vs External Secrets", "Different K8s secret management approaches",
+            "probe", "Compare Sealed Secrets, External Secrets Operator, and direct Vault integration", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1507, "Jenkins vs Cloud-Native CI (Tekton, Argo)", "Traditional vs cloud-native CI/CD",
+            "probe", "Compare Jenkins with cloud-native alternatives like Tekton and Argo Workflows", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1508, "Virtual Clusters (vClusters)", "Virtual clusters provide hard multi-tenancy",
+            "build", "Deploy vCluster for isolated virtual K8s clusters within host cluster", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1509, "OpenTelemetry for Platform Observability", "OTel standardizes observability data",
+            "build", "Implement OpenTelemetry collector for metrics, logs, and traces", 6, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1510, "FinOps for Platform Teams", "Cost optimization at platform scale",
+            "probe", "Apply FinOps principles to platform infrastructure and enable team accountability", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1511, "CLI Design Patterns & Best Practices", "Great CLIs improve developer experience",
+            "probe", "Explain CLI design: subcommands, flags, config files, output formats, and help text", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1512, "CloudNativePG Operator", "Operator pattern for PostgreSQL on K8s",
+            "build", "Deploy and manage PostgreSQL clusters with CloudNativePG operator", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1513, "Velero for Kubernetes Backups", "Velero backs up K8s resources and volumes",
+            "build", "Configure Velero for cluster backup, restore, and disaster recovery", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1514, "Platform Metrics: NPS, CSAT, Adoption", "Metrics prove platform value",
+            "probe", "Measure platform success with NPS, CSAT, adoption rate, and ticket volume reduction", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1515, "Platform Team Topologies", "Team structure affects platform success",
+            "probe", "Apply Team Topologies patterns: platform team, enabling team, and stream-aligned teams", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated Platform Engineer path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    
+    /**
+     * Cloud Architect Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1601-1615
+     */
+    private List<DetailedPathNode> generateCloudArchitectPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Cloud Foundations (1-7)
+        nodes.add(createNode(1, "Cloud Computing Fundamentals", "Cloud transforms IT from CapEx to OpEx",
+            "probe", "Explain IaaS, PaaS, SaaS, public/private/hybrid cloud, and cloud economics", 4, 4, "foundational",
+            List.of(2), List.of(1601))); // → 2, comp: Cloud service models
+    
+        nodes.add(createNode(2, "AWS Core Services", "AWS dominates the cloud market",
+            "build", "Master EC2, S3, VPC, IAM, CloudWatch, and understand the shared responsibility model", 6, 7, "foundational",
+            List.of(3), List.of(1602))); // → 3, comp: AWS vs Azure vs GCP
+    
+        nodes.add(createNode(3, "Cloud Networking Architecture", "Network design affects performance, security, and cost",
+            "build", "Design VPCs, subnets, route tables, NAT gateways, VPN, and Direct Connect", 6, 6, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "Identity & Access Management", "IAM is the foundation of cloud security",
+            "build", "Design IAM policies, roles, users, MFA, federation, and least privilege access", 6, 6, "foundational",
+            List.of(5), List.of(1603))); // → 5, comp: RBAC vs ABAC
+    
+        nodes.add(createNode(5, "Cloud Storage Architectures", "Choose the right storage for each use case",
+            "build", "Design solutions with S3, EBS, EFS, FSx, and understand performance/cost trade-offs", 5, 5, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "Compute Services & Optimization", "Right-size compute to balance cost and performance",
+            "build", "Use EC2, Lambda, ECS, EKS, and choose instance types, pricing models, and autoscaling", 6, 6, "foundational",
+            List.of(7), List.of(1604))); // → 7, comp: Spot vs Reserved vs Savings Plans
+    
+        nodes.add(createNode(7, "Database Services Selection", "Choose managed vs self-managed, SQL vs NoSQL",
+            "build", "Architect solutions with RDS, Aurora, DynamoDB, ElastiCache, and Redshift", 6, 6, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: Well-Architected Framework (8-15)
+        nodes.add(createNode(8, "Operational Excellence Pillar", "Automate operations and respond to events",
+            "probe", "Apply operational excellence: IaC, runbooks, deployment automation, and observability", 5, 5, "core",
+            List.of(9), List.of(1605))); // → 9, comp: Infrastructure as Code best practices
+    
+        nodes.add(createNode(9, "Security Pillar", "Implement defense in depth across all layers",
+            "build", "Apply security best practices: encryption, network isolation, security groups, WAF, GuardDuty", 6, 6, "core",
+            List.of(10), List.of()));
+    
+        nodes.add(createNode(10, "Reliability Pillar", "Design for failure and automatic recovery",
+            "build", "Implement fault tolerance with multi-AZ, auto-scaling, health checks, and circuit breakers", 6, 7, "core",
+            List.of(11), List.of(1606))); // → 11, comp: RTO vs RPO
+    
+        nodes.add(createNode(11, "Performance Efficiency Pillar", "Use the right resources for the right workload",
+            "build", "Optimize with CloudFront CDN, ElastiCache, database read replicas, and auto-scaling policies", 6, 6, "core",
+            List.of(12), List.of()));
+    
+        nodes.add(createNode(12, "Cost Optimization Pillar", "Architect for cost efficiency without sacrificing quality",
+            "build", "Implement cost optimization: right-sizing, Reserved Instances, S3 lifecycle, cost allocation tags", 6, 6, "core",
+            List.of(13), List.of(1607))); // → 13, comp: AWS Cost Explorer
+    
+        nodes.add(createNode(13, "Sustainability Pillar", "Minimize environmental impact of cloud workloads",
+            "probe", "Apply sustainability: efficient architectures, serverless, spot instances, carbon footprint tracking", 5, 4, "core",
+            List.of(14), List.of()));
+    
+        nodes.add(createNode(14, "High Availability Architectures", "Design for 99.99% or higher uptime",
+            "build", "Architect multi-AZ, multi-region solutions with Route 53, Global Accelerator, and failover", 7, 7, "core",
+            List.of(15), List.of(1608))); // → 15, comp: Active-active vs active-passive
+    
+        nodes.add(createNode(15, "Disaster Recovery Strategies", "Plan for worst-case scenarios",
+            "build", "Implement backup/restore, pilot light, warm standby, or multi-site DR strategies", 6, 7, "core",
+            List.of(16), List.of()));
+    
+        // PHASE 3: Advanced Cloud Architecture (16-23)
+        nodes.add(createNode(16, "Microservices on Cloud", "Microservices leverage cloud scalability and resilience",
+            "build", "Design microservices with API Gateway, Lambda, ECS/EKS, service mesh, and event-driven patterns", 7, 8, "advanced",
+            List.of(17), List.of(1609))); // → 17, comp: Serverless vs containers
+    
+        nodes.add(createNode(17, "Event-Driven Architectures", "Decouple services with asynchronous messaging",
+            "build", "Design with SNS, SQS, EventBridge, Kinesis for event-driven and streaming architectures", 7, 7, "advanced",
+            List.of(18), List.of()));
+    
+        nodes.add(createNode(18, "Data Lake & Analytics", "Build scalable data platforms on cloud",
+            "build", "Design data lakes with S3, Glue, Athena, EMR, and implement data governance", 7, 8, "advanced",
+            List.of(19), List.of(1610))); // → 19, comp: Data lake vs data warehouse
+    
+        nodes.add(createNode(19, "Machine Learning on Cloud", "Cloud provides ML infrastructure and managed services",
+            "build", "Architect ML pipelines with SageMaker, training jobs, model deployment, and MLOps", 7, 7, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Hybrid & Multi-Cloud Architecture", "Connect on-premises to cloud and across clouds",
+            "build", "Design hybrid architectures with VPN, Direct Connect, Transit Gateway, and Outposts", 7, 8, "advanced",
+            List.of(21), List.of(1611))); // → 21, comp: Multi-cloud strategies
+    
+        nodes.add(createNode(21, "Container Orchestration at Scale", "Kubernetes powers modern cloud-native apps",
+            "build", "Design production EKS clusters with Fargate, managed node groups, service mesh, and GitOps", 7, 8, "advanced",
+            List.of(22), List.of()));
+    
+        nodes.add(createNode(22, "Serverless Architectures", "Serverless eliminates server management",
+            "build", "Design serverless apps with Lambda, API Gateway, DynamoDB, Step Functions, and SAM/CDK", 7, 7, "advanced",
+            List.of(23), List.of(1612))); // → 23, comp: Cold start optimization
+    
+        nodes.add(createNode(23, "Cloud Migration Strategies", "Move workloads to cloud safely and efficiently",
+            "build", "Apply 7 R's of migration: rehost, replatform, refactor, retire, retain, relocate, repurchase", 6, 7, "advanced",
+            List.of(24), List.of()));
+    
+        // PHASE 4: Enterprise Architecture (24-30)
+        nodes.add(createNode(24, "Landing Zone & Account Strategy", "Multi-account strategy enables governance at scale",
+            "build", "Design AWS Organizations, Control Tower, SCPs, account structure, and centralized logging", 7, 8, "specialized",
+            List.of(25), List.of(1613))); // → 25, comp: AWS Control Tower
+    
+        nodes.add(createNode(25, "Compliance & Governance", "Meet regulatory requirements in the cloud",
+            "build", "Implement compliance with Config, Security Hub, Audit Manager, and artifact collection", 6, 7, "specialized",
+            List.of(26), List.of()));
+    
+        nodes.add(createNode(26, "FinOps & Cloud Economics", "Manage cloud costs across the organization",
+            "build", "Implement FinOps practices: budgets, forecasting, showback/chargeback, and optimization", 6, 6, "specialized",
+            List.of(27), List.of(1614))); // → 27, comp: Reserved capacity planning
+    
+        nodes.add(createNode(27, "Cloud Center of Excellence", "CoE drives cloud adoption and best practices",
+            "probe", "Establish cloud governance, training programs, architecture reviews, and innovation culture", 5, 6, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "Enterprise Integration Patterns", "Connect cloud services to legacy systems",
+            "build", "Design integration with API Gateway, AppFlow, EventBridge, and hybrid connectivity", 6, 7, "specialized",
+            List.of(29), List.of()));
+    
+        nodes.add(createNode(29, "Cloud-Native Architecture Patterns", "Apply proven patterns for cloud success",
+            "probe", "Master patterns: strangler fig, CQRS, event sourcing, saga, BFF, and anti-corruption layer", 7, 7, "specialized",
+            List.of(30), List.of(1615))); // → 30, comp: CAP theorem
+    
+        nodes.add(createNode(30, "Architecting for the Future", "Lead cloud transformation at enterprise scale",
+            "apply", "Drive cloud strategy, mentor architects, establish standards, and innovate with emerging tech", 7, 8, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1601-1615)
+        nodes.add(createNode(1601, "IaaS vs PaaS vs SaaS Trade-offs", "Choose the right abstraction level",
+            "probe", "Compare IaaS (EC2), PaaS (Elastic Beanstalk), and SaaS for different use cases", 4, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1602, "AWS vs Azure vs GCP Comparison", "Multi-cloud knowledge enables best-of-breed solutions",
+            "probe", "Compare compute, storage, networking, and ML services across major cloud providers", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1603, "RBAC vs ABAC Access Control", "Choose the right access control model",
+            "probe", "Compare role-based and attribute-based access control for enterprise IAM", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1604, "EC2 Pricing: Spot vs Reserved vs Savings Plans", "Optimize compute costs",
+            "probe", "Compare on-demand, spot, reserved instances, and compute/EC2 savings plans", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1605, "Terraform vs CloudFormation vs CDK", "Choose the right IaC tool",
+            "probe", "Compare Terraform HCL, CloudFormation YAML, and AWS CDK (TypeScript/Python)", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1606, "RTO vs RPO in Disaster Recovery", "Define recovery objectives",
+            "probe", "Explain Recovery Time Objective and Recovery Point Objective in DR planning", 5, 2, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1607, "AWS Cost Explorer & Optimization", "Visualize and optimize cloud spend",
+            "build", "Use Cost Explorer, Cost Anomaly Detection, and Compute Optimizer for cost management", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1608, "Active-Active vs Active-Passive HA", "Choose the right HA pattern",
+            "probe", "Compare active-active and active-passive high availability architectures", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1609, "Serverless vs Containers vs VMs", "Choose the right compute abstraction",
+            "probe", "Compare Lambda, Fargate/ECS/EKS, and EC2 for different workload types", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1610, "Data Lake vs Data Warehouse", "Choose the right data storage paradigm",
+            "probe", "Compare data lakes (S3/Glue) and data warehouses (Redshift) for analytics", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1611, "Multi-Cloud vs Cloud-Agnostic", "Balance portability and cloud-native features",
+            "probe", "Analyze trade-offs between multi-cloud, cloud-agnostic, and cloud-native approaches", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1612, "Lambda Cold Start Optimization", "Reduce serverless latency",
+            "build", "Optimize Lambda with provisioned concurrency, SnapStart, and runtime selection", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1613, "AWS Control Tower & Landing Zones", "Automate multi-account governance",
+            "build", "Deploy Control Tower for automated account provisioning and guardrails", 7, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1614, "Reserved Capacity Planning", "Commit to reserved capacity strategically",
+            "probe", "Analyze usage patterns to optimize Reserved Instances and Savings Plans commitments", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1615, "CAP Theorem in Distributed Systems", "Understand consistency/availability trade-offs",
+            "probe", "Explain CAP theorem and apply to DynamoDB, Aurora, and distributed system design", 6, 3, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated Cloud Architect path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+    }
+
+    
+    /**
+     * Mobile Architect Path - Complete 30 nodes + 15 competencies
+     * Competency IDs: 1701-1715
+     */
+    private List<DetailedPathNode> generateMobileArchitectPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+    
+        // PHASE 1: Mobile Foundations (1-7)
+        nodes.add(createNode(1, "Mobile Architecture Principles", "Mobile has unique constraints: battery, network, screen size",
+            "probe", "Explain mobile-specific concerns: offline-first, battery efficiency, responsive UI, app lifecycle", 5, 5, "foundational",
+            List.of(2), List.of(1701))); // → 2, comp: Native vs cross-platform
+    
+        nodes.add(createNode(2, "iOS & Android Platform Expertise", "Architects must understand both major platforms",
+            "probe", "Compare iOS (Swift/UIKit/SwiftUI) and Android (Kotlin/Views/Compose) ecosystems", 6, 6, "foundational",
+            List.of(3), List.of(1702))); // → 3, comp: Platform-specific patterns
+    
+        nodes.add(createNode(3, "Mobile App Architecture Patterns", "Choose the right architecture for your team and app",
+            "probe", "Compare MVC, MVP, MVVM, VIPER, Clean Architecture, and MVI for mobile apps", 6, 6, "foundational",
+            List.of(4), List.of()));
+    
+        nodes.add(createNode(4, "Dependency Injection for Mobile", "DI improves testability and modularity",
+            "build", "Implement DI with Dagger/Hilt (Android) and Swinject/Factory (iOS)", 6, 5, "foundational",
+            List.of(5), List.of(1703))); // → 5, comp: Service locator vs DI
+    
+        nodes.add(createNode(5, "State Management Architectures", "State management complexity grows with app size",
+            "build", "Design state management with Redux, MobX, Bloc, Riverpod, or reactive patterns", 6, 6, "foundational",
+            List.of(6), List.of()));
+    
+        nodes.add(createNode(6, "Navigation Architecture", "Complex apps need scalable navigation patterns",
+            "build", "Design deep linking, tab navigation, modal flows, and coordinator patterns", 5, 5, "foundational",
+            List.of(7), List.of(1704))); // → 7, comp: Universal links
+    
+        nodes.add(createNode(7, "Mobile API Design", "Mobile APIs need to optimize for latency and battery",
+            "build", "Design mobile-optimized APIs: pagination, caching headers, GraphQL, and BFF pattern", 6, 6, "core",
+            List.of(8), List.of()));
+    
+        // PHASE 2: Cross-Platform & Performance (8-15)
+        nodes.add(createNode(8, "React Native Architecture", "RN bridges JavaScript to native platforms",
+            "build", "Architect RN apps with navigation, state, native modules, and performance patterns", 6, 7, "core",
+            List.of(9), List.of(1705))); // → 9, comp: RN new architecture
+    
+        nodes.add(createNode(9, "Flutter Architecture", "Flutter compiles to native ARM code",
+            "build", "Design Flutter apps with widget tree optimization, BLoC, and platform channels", 6, 7, "core",
+            List.of(10), List.of(1706))); // → 10, comp: Flutter vs React Native
+    
+        nodes.add(createNode(10, "Offline-First Architecture", "Mobile apps must work without connectivity",
+            "build", "Implement offline sync with local DB, conflict resolution, and background sync", 7, 8, "core",
+            List.of(11), List.of()));
+    
+        nodes.add(createNode(11, "Mobile Database Architecture", "Choose the right local storage solution",
+            "build", "Design with SQLite, Realm, Core Data, Room, or key-value stores", 6, 6, "core",
+            List.of(12), List.of(1707))); // → 12, comp: SQLite vs NoSQL mobile
+    
+        nodes.add(createNode(12, "Mobile Performance Optimization", "60fps rendering requires careful optimization",
+            "build", "Profile and optimize: list virtualization, image caching, bundle size, startup time", 7, 8, "core",
+            List.of(13), List.of()));
+    
+        nodes.add(createNode(13, "Mobile Memory Management", "Memory leaks crash apps and drain battery",
+            "build", "Implement memory management: weak references, lifecycle-aware observers, profiling", 6, 6, "core",
+            List.of(14), List.of(1708))); // → 14, comp: ARC vs manual memory
+    
+        nodes.add(createNode(14, "Battery & Energy Optimization", "Battery life is a top user concern",
+            "build", "Optimize battery: background task scheduling, location accuracy, network batching", 6, 6, "core",
+            List.of(15), List.of()));
+    
+        nodes.add(createNode(15, "Mobile Security Architecture", "Mobile devices are high-value attack targets",
+            "build", "Implement: certificate pinning, jailbreak detection, secure storage, code obfuscation", 7, 7, "core",
+            List.of(16), List.of(1709))); // → 16, comp: OWASP Mobile Top 10
+    
+        // PHASE 3: Scaling & Infrastructure (16-23)
+        nodes.add(createNode(16, "Modular App Architecture", "Modularization enables team scaling",
+            "build", "Design multi-module apps: feature modules, shared libraries, dependency graphs", 7, 8, "advanced",
+            List.of(17), List.of(1710))); // → 17, comp: Dynamic feature modules
+    
+        nodes.add(createNode(17, "Mobile CI/CD Pipelines", "Automated pipelines accelerate mobile releases",
+            "build", "Build CI/CD with Fastlane, Bitrise, or GitHub Actions for testing and deployment", 6, 7, "advanced",
+            List.of(18), List.of()));
+    
+        nodes.add(createNode(18, "A/B Testing & Feature Flags", "Experiment and gradually roll out features",
+            "build", "Implement feature flags with Firebase Remote Config, LaunchDarkly, or Split", 6, 6, "advanced",
+            List.of(19), List.of(1711))); // → 19, comp: Remote config strategies
+    
+        nodes.add(createNode(19, "Mobile Analytics Architecture", "Data-driven decisions require comprehensive analytics",
+            "build", "Design analytics with Firebase, Mixpanel, Amplitude: events, funnels, cohorts", 6, 6, "advanced",
+            List.of(20), List.of()));
+    
+        nodes.add(createNode(20, "Crash Reporting & Monitoring", "Production issues need real-time detection",
+            "build", "Implement Crashlytics, Sentry, or Bugsnag with symbolication and alerting", 5, 5, "advanced",
+            List.of(21), List.of()));
+    
+        nodes.add(createNode(21, "Mobile App Distribution", "Manage beta testing and phased rollouts",
+            "build", "Set up TestFlight, Play Internal Testing, Firebase App Distribution for beta programs", 5, 5, "advanced",
+            List.of(22), List.of(1712))); // → 22, comp: OTA updates
+    
+        nodes.add(createNode(22, "Push Notification Architecture", "Notifications re-engage users across platforms",
+            "build", "Design push infrastructure with APNs, FCM, topics, user segments, and rich notifications", 6, 6, "advanced",
+            List.of(23), List.of()));
+    
+        nodes.add(createNode(23, "Mobile Backend Architecture", "Mobile backends require special considerations",
+            "build", "Design BFF, API Gateway, real-time sync, file upload/download, and webhooks", 7, 7, "advanced",
+            List.of(24), List.of(1713))); // → 24, comp: Firebase vs custom backend
+    
+        // PHASE 4: Enterprise & Leadership (24-30)
+        nodes.add(createNode(24, "Multi-Platform Strategy", "Balance code reuse with platform optimization",
+            "probe", "Define strategy: native, cross-platform, hybrid, or progressive web apps", 6, 6, "specialized",
+            List.of(25), List.of()));
+    
+        nodes.add(createNode(25, "Mobile Design Systems", "Design systems ensure consistency across platforms",
+            "build", "Build mobile design system: tokens, components, platform adaptations, and documentation", 6, 7, "specialized",
+            List.of(26), List.of(1714))); // → 26, comp: Material vs Cupertino
+    
+        nodes.add(createNode(26, "App Store Optimization (ASO)", "ASO drives organic discovery and downloads",
+            "probe", "Optimize: keywords, screenshots, videos, ratings/reviews, and localization", 5, 5, "specialized",
+            List.of(27), List.of()));
+    
+        nodes.add(createNode(27, "Mobile DevOps & SRE", "Production mobile apps need SRE practices",
+            "build", "Implement: SLIs/SLOs for mobile, incident response, on-call, and blameless postmortems", 6, 6, "specialized",
+            List.of(28), List.of()));
+    
+        nodes.add(createNode(28, "Mobile Team Scaling", "Scale mobile teams without losing velocity",
+            "probe", "Design team structure: platform teams, feature teams, and shared infrastructure", 6, 6, "specialized",
+            List.of(29), List.of(1715))); // → 29, comp: Conway's Law
+    
+        nodes.add(createNode(29, "Mobile Architecture Governance", "Standards prevent technical debt at scale",
+            "build", "Establish: architecture reviews, RFCs, tech radar, and migration strategies", 6, 6, "specialized",
+            List.of(30), List.of()));
+    
+        nodes.add(createNode(30, "Mobile Innovation & Strategy", "Lead mobile technology decisions and culture",
+            "apply", "Drive mobile strategy, evaluate emerging tech, mentor architects, and build mobile excellence", 7, 8, "specialized",
+            List.of(), List.of())); // Terminal node
+    
+        // COMPETENCIES (1701-1715)
+        nodes.add(createNode(1701, "Native vs Cross-Platform Trade-offs", "Choose the right approach for your context",
+            "probe", "Compare native (Swift/Kotlin), cross-platform (RN/Flutter), and hybrid (Ionic/Cordova)", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1702, "iOS vs Android Platform Patterns", "Platform conventions affect UX and development",
+            "probe", "Compare navigation, lifecycle, permissions, and design patterns across platforms", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1703, "Service Locator vs Dependency Injection", "Different approaches to manage dependencies",
+            "probe", "Compare service locator pattern with constructor injection and property injection", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1704, "Universal Links & App Links", "Deep linking connects web and mobile",
+            "build", "Implement iOS Universal Links and Android App Links with domain verification", 5, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1705, "React Native New Architecture", "Fabric and TurboModules improve RN performance",
+            "probe", "Explain new architecture: Fabric renderer, TurboModules, and CodeGen", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1706, "Flutter vs React Native Comparison", "Choose the right cross-platform framework",
+            "probe", "Compare Flutter and React Native: performance, ecosystem, developer experience", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1707, "Mobile SQLite vs NoSQL Databases", "Choose the right local database",
+            "probe", "Compare SQLite, Realm, and other mobile databases for different use cases", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1708, "ARC vs Manual Memory Management", "Understand memory management across platforms",
+            "probe", "Explain Automatic Reference Counting (iOS) vs garbage collection vs manual", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1709, "OWASP Mobile Top 10", "Know the most critical mobile security risks",
+            "probe", "Explain OWASP Mobile Top 10: insecure data storage, auth, crypto, code quality", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1710, "Android Dynamic Feature Modules", "On-demand modules reduce initial download size",
+            "build", "Implement dynamic feature modules for large Android apps with Play Feature Delivery", 6, 5, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1711, "Remote Config vs Feature Flags", "Different approaches to runtime configuration",
+            "probe", "Compare Firebase Remote Config, LaunchDarkly, and in-app feature flags", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1712, "OTA Updates: CodePush & EAS", "Update apps without app store review",
+            "build", "Implement over-the-air updates with CodePush (RN) or EAS Update (Expo)", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1713, "Firebase vs Custom Backend", "BaaS vs custom backend trade-offs",
+            "probe", "Compare Firebase BaaS with custom backend for auth, database, storage, and functions", 6, 4, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1714, "Material Design vs iOS Human Interface", "Platform design languages differ",
+            "probe", "Compare Material Design 3 and iOS Human Interface Guidelines for adaptive design", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        nodes.add(createNode(1715, "Conway's Law in Mobile Teams", "Team structure determines architecture",
+            "probe", "Apply Conway's Law: how team organization affects mobile app architecture", 5, 3, "competency",
+            List.of(), List.of()));
+    
+        System.out.println("[TEMPLATE] Generated Mobile Architect path with " + nodes.size() + " nodes (30 main + 15 competencies)");
+        return nodes;
+
+    }
+
+    /**
+     * Helper method to create a node with all required fields
+     */
+    private DetailedPathNode createNode(int id, String name, String whyItMatters,
+                                        String assessmentType, String proofRequirement,
+                                        int difficulty, int estimatedHours, String category,
+                                        List<Integer> unlocks, List<Integer> competencies) {
+        DetailedPathNode node = new DetailedPathNode();
+        node.setSkillNodeId(id);
+        node.setName(name);
+        node.setWhyItMatters(whyItMatters);
+        node.setAssessmentType(assessmentType);
+        node.setProofRequirement(proofRequirement);
+        node.setDifficulty(difficulty);
+        node.setEstimatedHours(estimatedHours);
+        node.setCategory(category);
+        node.setDependencies(List.of());
+        node.setUnlocks(unlocks);
+        node.setCompetencies(competencies);
+        node.setLearnResources(List.of());
+        return node;
+    }
+
+    public List<com.careermappro.models.CuratedResource> discoverLearningResources(String prompt, com.careermappro.entities.SkillNode node) {
+        System.out.println("[OPENAI-RESOURCE] Discovering resources for: " + node.getCanonicalName());
+        String response = callOpenAI(prompt, 0.7, 1500);
+        try {
+            String jsonResponse = response;
+            if (response.contains("```json")) {
+                jsonResponse = response.substring(response.indexOf("["), response.lastIndexOf("]") + 1);
+            } else if (response.contains("```")) {
+                jsonResponse = response.substring(response.indexOf("["), response.lastIndexOf("]") + 1);
+            }
+            JsonNode resourcesArray = objectMapper.readTree(jsonResponse);
+            List<com.careermappro.models.CuratedResource> resources = new ArrayList<>();
+            for (JsonNode resourceNode : resourcesArray) {
+                com.careermappro.models.CuratedResource resource = new com.careermappro.models.CuratedResource();
+                resource.setTitle(resourceNode.get("title").asText());
+                resource.setUrl(resourceNode.get("url").asText());
+                resource.setType(resourceNode.get("type").asText());
+                resource.setSource(resourceNode.get("source").asText());
+                resource.setDescription(resourceNode.get("description").asText());
+                resource.setEstimatedMinutes(resourceNode.get("estimatedMinutes").asInt());
+                String tags = "[\"" + node.getCanonicalName().toLowerCase() + "\"]";
+                resource.setTags(tags);
+                resources.add(resource);
+            }
+            System.out.println("[OPENAI-RESOURCE] Discovered " + resources.size() + " resources");
+            return resources;
+        } catch (Exception e) {
+            System.err.println("[OPENAI-RESOURCE] Failed to parse resources: " + e.getMessage());
+            e.printStackTrace();
+            return List.of();
+        }
+    }
+}

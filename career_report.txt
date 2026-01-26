@@ -1,0 +1,15 @@
+=== CareerMap Report ===
+
+Your Skills:
+[java, sql]
+
+Required Skills (detected):
+[java, spring boot, docker, aws, sql]
+
+Missing Skills:
+[aws, docker, spring boot]
+
+Recommended Learning Order:
+[aws, docker, spring boot]
+
+Generated on: 2025-10-21 22:27
