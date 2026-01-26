@@ -432,7 +432,9 @@ function CalibrationResults({
         >
           <h2 className="text-2xl font-bold text-white mb-6">Domain Confidence</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {Object.entries(analysis.domainScores).map(([domain, score], index) => (
+            {Object.entries(analysis.domainScores).map(([domain, score], index) => {
+              const scoreValue = Number(score);
+              return (
               <motion.div
                 key={domain}
                 initial={{ opacity: 0, scale: 0.9 }}
@@ -442,21 +444,22 @@ function CalibrationResults({
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-slate-300">{domain}</span>
-                  {score >= 0.7 ? <TrendingUp className="w-4 h-4 text-green-400" /> :
-                   score >= 0.4 ? <AlertCircle className="w-4 h-4 text-yellow-400" /> :
+                  {scoreValue >= 0.7 ? <TrendingUp className="w-4 h-4 text-green-400" /> :
+                   scoreValue >= 0.4 ? <AlertCircle className="w-4 h-4 text-yellow-400" /> :
                    <HelpCircle className="w-4 h-4 text-slate-500" />}
                 </div>
                 <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full ${
-                      score >= 0.7 ? 'bg-green-500' :
-                      score >= 0.4 ? 'bg-yellow-500' :
+                      scoreValue >= 0.7 ? 'bg-green-500' :
+                      scoreValue >= 0.4 ? 'bg-yellow-500' :
                       'bg-slate-600'
                     }`}
-                    style={{ width: `${score * 100}%` }}
+                    style={{ width: `${scoreValue * 100}%` }}
                   />
                 </div>
               </motion.div>
+            )}}
             ))}
           </div>
         </motion.div>
