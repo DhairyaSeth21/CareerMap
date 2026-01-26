@@ -134,11 +134,11 @@ export default function EvidencePage() {
 
           // Update strong/gaps/unknown lists
           const updatedStrong = Object.entries(calibration.domainScores)
-            .filter(([_, score]) => score >= 0.7)
+            .filter(([_, score]) => Number(score) >= 0.7)
             .map(([domain]) => domain);
 
           const updatedGaps = Object.entries(calibration.domainScores)
-            .filter(([_, score]) => score >= 0.3 && score < 0.7)
+            .filter(([_, score]) => Number(score) >= 0.3 && Number(score) < 0.7)
             .map(([domain]) => domain);
 
           calibration.strong = updatedStrong;
