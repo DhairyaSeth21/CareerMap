@@ -2,7 +2,9 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 
+// PRODUCTION DEPLOYMENT - DO NOT CHANGE THIS URL
 const API_BASE_URL = 'https://careermap-production.up.railway.app';
+console.log('🚨 AuthContext using API_BASE_URL:', API_BASE_URL);
 
 interface User {
   userId: number;
