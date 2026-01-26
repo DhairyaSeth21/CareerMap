@@ -14,15 +14,16 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const checkAuth = () => {
-      const user = localStorage.getItem("user");
+      const authToken = localStorage.getItem("authToken");
+      const userId = localStorage.getItem("userId");
 
-      if (!user && !publicRoutes.includes(pathname)) {
+      if (!authToken && !publicRoutes.includes(pathname)) {
         // User not authenticated and trying to access protected route
         router.push("/");
         return;
       }
 
-      setIsAuthenticated(!!user);
+      setIsAuthenticated(!!authToken);
       setIsLoading(false);
     };
 
