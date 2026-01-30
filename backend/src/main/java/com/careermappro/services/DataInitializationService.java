@@ -1,10 +1,14 @@
 package com.careermappro.services;
 
 import com.careermappro.entities.Achievement;
+import com.careermappro.entities.CareerRole;
+import com.careermappro.entities.Domain;
 import com.careermappro.entities.Role;
 import com.careermappro.entities.RoleSkill;
 import com.careermappro.entities.Skill;
 import com.careermappro.repositories.AchievementRepository;
+import com.careermappro.repositories.CareerRoleRepository;
+import com.careermappro.repositories.DomainRepository;
 import com.careermappro.repositories.RoleRepository;
 import com.careermappro.repositories.RoleSkillRepository;
 import com.careermappro.repositories.SkillRepository;
@@ -21,17 +25,23 @@ public class DataInitializationService implements CommandLineRunner {
     private final RoleRepository roleRepository;
     private final SkillRepository skillRepository;
     private final RoleSkillRepository roleSkillRepository;
+    private final DomainRepository domainRepository;
+    private final CareerRoleRepository careerRoleRepository;
 
     public DataInitializationService(
         AchievementRepository achievementRepository,
         RoleRepository roleRepository,
         SkillRepository skillRepository,
-        RoleSkillRepository roleSkillRepository
+        RoleSkillRepository roleSkillRepository,
+        DomainRepository domainRepository,
+        CareerRoleRepository careerRoleRepository
     ) {
         this.achievementRepository = achievementRepository;
         this.roleRepository = roleRepository;
         this.skillRepository = skillRepository;
         this.roleSkillRepository = roleSkillRepository;
+        this.domainRepository = domainRepository;
+        this.careerRoleRepository = careerRoleRepository;
     }
 
     @Override
@@ -117,6 +127,66 @@ public class DataInitializationService implements CommandLineRunner {
         if (roleRepository.count() == 0) {
             initializeRoles();
         }
+
+        // Initialize domains and career roles for the frontier map
+        if (domainRepository.count() == 0) {
+            initializeDomainsAndCareerRoles();
+        }
+    }
+
+    private void initializeDomainsAndCareerRoles() {
+        // Create domains
+        Domain backend = new Domain("Backend Engineering", "Server-side development, APIs, databases, and system architecture", "💻", "#3b82f6");
+        Domain frontend = new Domain("Frontend Engineering", "User interfaces, web applications, and client-side development", "🎨", "#8b5cf6");
+        Domain devops = new Domain("Cloud & DevOps", "Cloud infrastructure, CI/CD, containers, and operations", "☁️", "#f59e0b");
+        Domain ml = new Domain("Machine Learning", "AI, data science, ML models, and neural networks", "🤖", "#ec4899");
+        Domain security = new Domain("Cybersecurity", "Security engineering, penetration testing, and threat analysis", "🔒", "#ef4444");
+        Domain mobile = new Domain("Mobile Development", "iOS, Android, and cross-platform mobile applications", "📱", "#10b981");
+
+        backend = domainRepository.save(backend);
+        frontend = domainRepository.save(frontend);
+        devops = domainRepository.save(devops);
+        ml = domainRepository.save(ml);
+        security = domainRepository.save(security);
+        mobile = domainRepository.save(mobile);
+
+        System.out.println("✅ Initialized 6 domains");
+
+        // Create career roles for each domain
+        // Backend Engineering roles
+        careerRoleRepository.save(new CareerRole(backend, "Backend Engineer", "Build server-side applications, APIs, and data systems", "🔧"));
+        careerRoleRepository.save(new CareerRole(backend, "API Developer", "Design and implement RESTful and GraphQL APIs", "🔌"));
+        careerRoleRepository.save(new CareerRole(backend, "Microservices Architect", "Design distributed systems and microservices architectures", "🏗️"));
+        careerRoleRepository.save(new CareerRole(backend, "Database Engineer", "Design, optimize, and maintain database systems", "🗄️"));
+
+        // Frontend Engineering roles
+        careerRoleRepository.save(new CareerRole(frontend, "Frontend Developer", "Build responsive web interfaces with modern frameworks", "🖥️"));
+        careerRoleRepository.save(new CareerRole(frontend, "React Developer", "Specialize in React ecosystem and component architecture", "⚛️"));
+        careerRoleRepository.save(new CareerRole(frontend, "UI/UX Engineer", "Bridge design and development with pixel-perfect implementations", "✨"));
+
+        // Cloud & DevOps roles
+        careerRoleRepository.save(new CareerRole(devops, "DevOps Engineer", "Automate deployments, manage infrastructure, and ensure reliability", "🚀"));
+        careerRoleRepository.save(new CareerRole(devops, "Site Reliability Engineer", "Ensure system reliability, performance, and scalability", "📊"));
+        careerRoleRepository.save(new CareerRole(devops, "Platform Engineer", "Build and maintain internal developer platforms", "🛠️"));
+        careerRoleRepository.save(new CareerRole(devops, "Cloud Architect", "Design scalable cloud-native architectures", "☁️"));
+
+        // Machine Learning roles
+        careerRoleRepository.save(new CareerRole(ml, "ML Engineer", "Build and deploy machine learning models at scale", "🧠"));
+        careerRoleRepository.save(new CareerRole(ml, "Data Scientist", "Extract insights from data using statistical methods and ML", "📈"));
+        careerRoleRepository.save(new CareerRole(ml, "AI Research Engineer", "Research and implement cutting-edge AI algorithms", "🔬"));
+
+        // Cybersecurity roles
+        careerRoleRepository.save(new CareerRole(security, "Security Engineer", "Design and implement security controls and systems", "🛡️"));
+        careerRoleRepository.save(new CareerRole(security, "Penetration Tester", "Identify vulnerabilities through ethical hacking", "🎯"));
+        careerRoleRepository.save(new CareerRole(security, "Security Analyst", "Monitor, detect, and respond to security threats", "🔍"));
+
+        // Mobile Development roles
+        careerRoleRepository.save(new CareerRole(mobile, "iOS Developer", "Build native iOS applications with Swift", "🍎"));
+        careerRoleRepository.save(new CareerRole(mobile, "Android Developer", "Build native Android applications with Kotlin", "🤖"));
+        careerRoleRepository.save(new CareerRole(mobile, "React Native Developer", "Build cross-platform mobile apps with React Native", "📲"));
+        careerRoleRepository.save(new CareerRole(mobile, "Flutter Developer", "Build cross-platform mobile apps with Flutter/Dart", "🦋"));
+
+        System.out.println("✅ Initialized 21 career roles across 6 domains");
     }
 
     private void initializeRoles() {
