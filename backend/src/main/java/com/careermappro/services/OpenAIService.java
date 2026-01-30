@@ -505,6 +505,8 @@ public class OpenAIService {
             template = generateDatabaseEngineerPath();
         } else if (lowerName.contains("frontend")) {
             template = generateFrontendDeveloperPath();
+        } else if (lowerName.contains("penetration") || lowerName.contains("pentest")) {
+            template = generatePenetrationTesterPath();
         } else if (lowerName.contains("security")) {
             template = generateSecurityEngineerPath();
         } else if (lowerName.contains("devops")) {
@@ -1279,6 +1281,236 @@ public class OpenAIService {
             List.of(), List.of()));
 
         System.out.println("[TEMPLATE] Generated Security Engineer path with " + nodes.size() + " nodes (30 main + 24 competencies)");
+        return nodes;
+    }
+
+    /**
+     * Penetration Tester Path Template
+     * 30 main nodes + ~22 competency branches - Linear progression
+     * Focus: Offensive security, ethical hacking, vulnerability exploitation
+     */
+    private List<DetailedPathNode> generatePenetrationTesterPath() {
+        List<DetailedPathNode> nodes = new ArrayList<>();
+
+        // JOB-READY PENETRATION TESTER PATH
+        // 30 main nodes covering everything needed to work as a professional pen tester
+        // Competencies branch out as optional related skills
+
+        // === PHASE 1: FOUNDATIONS & ENVIRONMENT (Nodes 1-6) ===
+        nodes.add(createNode(1, "Linux for Penetration Testers", "Kali Linux is the pen tester's primary tool",
+            "build", "Set up Kali Linux, navigate CLI, manage services", 3, 3, "foundational",
+            List.of(2), List.of(701))); // → Node 2, comp: Parrot OS
+
+        nodes.add(createNode(2, "Networking Fundamentals", "Understanding networks is essential for exploitation",
+            "probe", "Explain TCP/IP, ports, protocols, subnets, routing", 3, 3, "foundational",
+            List.of(3), List.of(702))); // → Node 3, comp: Wireshark deep dive
+
+        nodes.add(createNode(3, "Cryptography for Pen Testers", "Know what you're trying to break",
+            "probe", "Explain hashing, encryption, SSL/TLS, and common weaknesses", 3, 3, "foundational",
+            List.of(4), List.of())); // → Node 4
+
+        nodes.add(createNode(4, "Legal and Ethical Framework", "Know the rules before you hack",
+            "probe", "Explain Rules of Engagement, scope, contracts, and legal boundaries", 3, 2, "foundational",
+            List.of(5), List.of(703))); // → Node 5, comp: Report writing
+
+        nodes.add(createNode(5, "Pentesting Methodologies", "Follow structured approaches",
+            "probe", "Explain PTES, OWASP Testing Guide, and NIST frameworks", 3, 3, "foundational",
+            List.of(6), List.of())); // → Node 6
+
+        nodes.add(createNode(6, "Lab Environment Setup", "Practice in safe environments",
+            "build", "Set up vulnerable VMs (DVWA, Metasploitable, HackTheBox)", 4, 3, "foundational",
+            List.of(7), List.of(704))); // → Node 7, comp: TryHackMe, HackTheBox
+
+        // === PHASE 2: RECONNAISSANCE (Nodes 7-11) ===
+        nodes.add(createNode(7, "Passive Reconnaissance", "Gather intel without touching the target",
+            "build", "Perform OSINT with Google dorks, Shodan, Maltego, theHarvester", 4, 3, "core",
+            List.of(8), List.of(705))); // → Node 8, comp: Social media OSINT
+
+        nodes.add(createNode(8, "Active Reconnaissance", "Directly probe the target network",
+            "build", "Perform host discovery, port scanning with Nmap", 5, 4, "core",
+            List.of(9), List.of(706))); // → Node 9, comp: Masscan for large networks
+
+        nodes.add(createNode(9, "Service Enumeration", "Identify what's running on open ports",
+            "build", "Enumerate services: HTTP, SMB, DNS, FTP, SSH with targeted tools", 5, 4, "core",
+            List.of(10), List.of())); // → Node 10
+
+        nodes.add(createNode(10, "Vulnerability Scanning", "Automate vulnerability discovery",
+            "build", "Use Nessus, OpenVAS to find known vulnerabilities", 5, 3, "core",
+            List.of(11), List.of(707))); // → Node 11, comp: Nuclei templates
+
+        nodes.add(createNode(11, "Attack Surface Mapping", "Map the complete attack surface",
+            "build", "Create comprehensive attack surface map with all entry points", 5, 3, "core",
+            List.of(12), List.of())); // → Node 12
+
+        // === PHASE 3: WEB APPLICATION ATTACKS (Nodes 12-18) ===
+        nodes.add(createNode(12, "OWASP Top 10 Deep Dive", "Master the most common web vulnerabilities",
+            "probe", "Explain and identify all OWASP Top 10 vulnerabilities", 5, 4, "core",
+            List.of(13), List.of(708))); // → Node 13, comp: OWASP WSTG
+
+        nodes.add(createNode(13, "Burp Suite Mastery", "The essential web testing tool",
+            "build", "Use Burp Suite proxy, repeater, intruder, scanner professionally", 6, 5, "core",
+            List.of(14), List.of(709))); // → Node 14, comp: OWASP ZAP
+
+        nodes.add(createNode(14, "SQL Injection Attacks", "Exploit database vulnerabilities",
+            "build", "Perform union-based, blind, and time-based SQLi with sqlmap", 6, 4, "advanced",
+            List.of(15), List.of(710))); // → Node 15, comp: NoSQL injection
+
+        nodes.add(createNode(15, "XSS Exploitation", "Execute code in victim browsers",
+            "build", "Exploit reflected, stored, and DOM-based XSS", 6, 4, "advanced",
+            List.of(16), List.of())); // → Node 16
+
+        nodes.add(createNode(16, "Authentication Bypass", "Break login mechanisms",
+            "build", "Bypass auth via brute force, credential stuffing, logic flaws", 6, 4, "advanced",
+            List.of(17), List.of(711))); // → Node 17, comp: OAuth attacks
+
+        nodes.add(createNode(17, "Server-Side Attacks", "Exploit server-side vulnerabilities",
+            "build", "Exploit SSRF, XXE, template injection, file inclusion", 7, 5, "advanced",
+            List.of(18), List.of(712))); // → Node 18, comp: Deserialization attacks
+
+        nodes.add(createNode(18, "File Upload Attacks", "Weaponize file upload features",
+            "build", "Upload web shells, bypass filters, achieve code execution", 7, 4, "advanced",
+            List.of(19), List.of())); // → Node 19
+
+        // === PHASE 4: NETWORK & SYSTEM ATTACKS (Nodes 19-24) ===
+        nodes.add(createNode(19, "Network Attacks", "Exploit network-level vulnerabilities",
+            "build", "Perform ARP spoofing, MITM attacks, network pivoting", 7, 5, "advanced",
+            List.of(20), List.of(713))); // → Node 20, comp: Responder/LLMNR poisoning
+
+        nodes.add(createNode(20, "Password Attacks", "Crack and capture credentials",
+            "build", "Use hashcat, John the Ripper, credential dumping", 6, 4, "advanced",
+            List.of(21), List.of(714))); // → Node 21, comp: Pass-the-hash
+
+        nodes.add(createNode(21, "Exploitation Frameworks", "Use professional exploitation tools",
+            "build", "Use Metasploit: modules, payloads, meterpreter sessions", 7, 5, "advanced",
+            List.of(22), List.of(715))); // → Node 22, comp: Cobalt Strike (overview)
+
+        nodes.add(createNode(22, "Linux Privilege Escalation", "Go from user to root",
+            "build", "Escalate privileges via SUID, kernel exploits, misconfigs", 8, 5, "advanced",
+            List.of(23), List.of())); // → Node 23
+
+        nodes.add(createNode(23, "Windows Privilege Escalation", "Go from user to SYSTEM",
+            "build", "Escalate via tokens, services, scheduled tasks, registry", 8, 5, "advanced",
+            List.of(24), List.of(716))); // → Node 24, comp: Active Directory attacks
+
+        nodes.add(createNode(24, "Post-Exploitation", "Maintain access and move laterally",
+            "build", "Perform persistence, lateral movement, pivoting", 8, 5, "specialized",
+            List.of(25), List.of(717))); // → Node 25, comp: Data exfiltration
+
+        // === PHASE 5: ADVANCED & REPORTING (Nodes 25-30) ===
+        nodes.add(createNode(25, "Wireless Penetration Testing", "Attack WiFi networks",
+            "build", "Crack WPA2, perform evil twin attacks with aircrack-ng", 7, 4, "specialized",
+            List.of(26), List.of(718))); // → Node 26, comp: Bluetooth hacking
+
+        nodes.add(createNode(26, "API Penetration Testing", "Test modern API security",
+            "build", "Test REST/GraphQL APIs for auth flaws, IDOR, rate limiting", 7, 4, "specialized",
+            List.of(27), List.of())); // → Node 27
+
+        nodes.add(createNode(27, "Cloud Penetration Testing", "Attack cloud environments",
+            "build", "Test AWS/Azure for misconfigs, exposed storage, IAM flaws", 8, 5, "specialized",
+            List.of(28), List.of(719))); // → Node 28, comp: Container escapes
+
+        nodes.add(createNode(28, "Mobile Application Testing", "Test iOS and Android apps",
+            "build", "Decompile APKs, test APIs, find hardcoded secrets", 7, 5, "specialized",
+            List.of(29), List.of(720))); // → Node 29, comp: Frida for runtime analysis
+
+        nodes.add(createNode(29, "Professional Report Writing", "Document findings effectively",
+            "apply", "Write executive summary, technical findings, remediation guidance", 6, 4, "specialized",
+            List.of(30), List.of(721))); // → Node 30, comp: CVSS scoring
+
+        nodes.add(createNode(30, "Pentest Certification Prep", "Validate your skills",
+            "apply", "Prepare for OSCP, CEH, or PNPT certification", 8, 6, "specialized",
+            List.of(), List.of(722))); // Final node, comp: Bug bounty
+
+        // === COMPETENCY NODES (701-722) - Optional branches ===
+        nodes.add(createNode(701, "Parrot Security OS", "Alternative to Kali Linux",
+            "build", "Set up and use Parrot OS for penetration testing", 3, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(702, "Advanced Wireshark Analysis", "Deep packet analysis",
+            "build", "Analyze traffic, decrypt TLS, follow TCP streams", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(703, "Professional Pentest Reports", "Client-ready documentation",
+            "apply", "Create professional reports with executive summaries", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(704, "CTF Platforms", "Practice hacking legally",
+            "build", "Complete challenges on TryHackMe, HackTheBox, PicoCTF", 4, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(705, "Social Media OSINT", "Intelligence from social platforms",
+            "build", "Gather intel from LinkedIn, Twitter, Facebook", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(706, "Masscan for Large Networks", "High-speed port scanning",
+            "build", "Scan large IP ranges efficiently with masscan", 5, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(707, "Custom Nuclei Templates", "Automated vulnerability scanning",
+            "build", "Write custom Nuclei templates for specific vulnerabilities", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(708, "OWASP Web Security Testing Guide", "Comprehensive testing methodology",
+            "probe", "Follow WSTG checklist for thorough web app testing", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(709, "OWASP ZAP", "Open-source web scanner",
+            "build", "Use ZAP for automated and manual web testing", 5, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(710, "NoSQL Injection", "Attack MongoDB and similar databases",
+            "build", "Exploit NoSQL injection in MongoDB, CouchDB", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(711, "OAuth Security Testing", "Attack OAuth implementations",
+            "build", "Exploit OAuth misconfigurations, token theft", 7, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(712, "Deserialization Attacks", "Exploit unsafe deserialization",
+            "build", "Attack Java, PHP, Python deserialization vulnerabilities", 8, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(713, "LLMNR/NBT-NS Poisoning", "Attack Windows name resolution",
+            "build", "Capture hashes with Responder", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(714, "Pass-the-Hash Attacks", "Reuse captured hashes",
+            "build", "Use captured NTLM hashes for lateral movement", 7, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(715, "Cobalt Strike Overview", "Commercial C2 framework",
+            "probe", "Understand Cobalt Strike capabilities and detection", 7, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(716, "Active Directory Attacks", "Attack enterprise AD environments",
+            "build", "Exploit Kerberoasting, AS-REP roasting, DCSync", 9, 6, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(717, "Data Exfiltration Techniques", "Extract data covertly",
+            "probe", "Explain DNS tunneling, steganography, encrypted channels", 7, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(718, "Bluetooth Security Testing", "Attack Bluetooth devices",
+            "build", "Test Bluetooth for bluejacking, bluesnarfing", 6, 3, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(719, "Container Security Testing", "Attack Docker/Kubernetes",
+            "build", "Test containers for escapes, misconfigs", 8, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(720, "Mobile Runtime Analysis", "Dynamic app analysis with Frida",
+            "build", "Hook and modify app behavior at runtime", 8, 4, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(721, "CVSS Scoring", "Standardize vulnerability severity",
+            "probe", "Calculate CVSS scores for vulnerabilities", 4, 2, "competency",
+            List.of(), List.of()));
+
+        nodes.add(createNode(722, "Bug Bounty Hunting", "Get paid for finding bugs",
+            "apply", "Participate in bug bounty programs on HackerOne, Bugcrowd", 7, 4, "competency",
+            List.of(), List.of()));
+
+        System.out.println("[TEMPLATE] Generated Penetration Tester path with " + nodes.size() + " nodes (30 main + 22 competencies)");
         return nodes;
     }
 
