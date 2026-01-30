@@ -584,6 +584,21 @@ export default function PathView({ role, path, focusNode, completedNodeIds, edls
 
               </button>
 
+              {/* EDLSG State Badge - shows current skill state */}
+              <div className="absolute left-1/2 -translate-x-1/2 pointer-events-none" style={{ top: '100%', marginTop: '8px' }}>
+                <div className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${
+                  isCompleted
+                    ? 'bg-green-500/20 text-green-400 border border-green-500/50'
+                    : isFrontier
+                    ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50 animate-pulse'
+                    : isLocked
+                    ? 'bg-slate-700/50 text-slate-500 border border-slate-600/50'
+                    : 'bg-blue-500/20 text-blue-400 border border-blue-500/50'
+                }`}>
+                  {isCompleted ? '✓ PROVED' : isFrontier ? '◉ ACTIVE' : isLocked ? '🔒 LOCKED' : '○ READY'}
+                </div>
+              </div>
+
               {/* STEP 2: Semantic label badge for branch nodes on hover - OUTSIDE button for proper z-index */}
               {isBranch && hoveredNode === node.skillNodeId && (() => {
                 const semantics = getBranchSemantics(node);
