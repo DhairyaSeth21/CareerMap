@@ -146,11 +146,12 @@ public class CoreLoopController {
 
             // Propose PROBE session for focus node if exists
             // Don't fail the entire request if session creation fails
+            // (skill nodes may not exist in database for template-based paths)
             Session session = null;
             if (focusNode != null) {
                 try {
                     session = sessionService.proposeProbeSession(userId, focusNode.getSkillNodeId());
-                } catch (IllegalStateException e) {
+                } catch (Exception e) {
                     System.out.println("[CORE LOOP] Skipping session creation - " + e.getMessage());
                 }
             }
