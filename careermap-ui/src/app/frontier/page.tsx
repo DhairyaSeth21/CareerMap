@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PlayCircle, X, BookOpen, ExternalLink } from 'lucide-react';
+import { PlayCircle, X, BookOpen, ExternalLink, HelpCircle } from 'lucide-react';
 import DomainView from './DomainView';
+import PathTutorial from '../../components/PathTutorial';
 import RoleView from './RoleView';
 import PathView from './PathView';
 import NodeResources from './NodeResources';
@@ -131,6 +132,21 @@ export default function Frontier() {
   const [showFocusPanel, setShowFocusPanel] = useState(false);
   const [showQuiz, setShowQuiz] = useState(false);
   const [showResults, setShowResults] = useState(false);
+
+  // Tutorial state
+  const [showTutorial, setShowTutorial] = useState(false);
+
+  // Check if first-time user and show tutorial
+  useEffect(() => {
+    const tutorialComplete = localStorage.getItem('pathTutorialComplete');
+    if (!tutorialComplete) {
+      // Small delay to let the page render first
+      const timer = setTimeout(() => {
+        setShowTutorial(true);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
 
   // Auto-dismiss banner after 5 seconds
   useEffect(() => {
@@ -860,6 +876,26 @@ export default function Frontier() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Help/Tutorial Button */}
+      <motion.button
+        onClick={() => setShowTutorial(true)}
+        className="fixed bottom-6 right-6 z-40 w-14 h-14 bg-purple-600 hover:bg-purple-500 rounded-full shadow-lg shadow-purple-500/30 flex items-center justify-center transition-all hover:scale-110"
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.95 }}
+        title="How does this work?"
+      >
+        <HelpCircle className="w-6 h-6 text-white" />
+      </motion.button>
+
+      {/* Path Tutorial Overlay */}
+      <PathTutorial
+        isOpen={showTutorial}
+        onClose={() => setShowTutorial(false)}
+        onComplete={() => {
+          localStorage.setItem('pathTutorialComplete', 'true');
+        }}
+      />
     </div>
   );
 }
