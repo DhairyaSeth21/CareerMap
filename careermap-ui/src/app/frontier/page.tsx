@@ -19,6 +19,7 @@ import {
   ZoomLevel,
   ZoomState,
 } from './types';
+import { API_URL } from '../../config/api';
 
 // Calibration state interface
 interface CalibrationState {
@@ -176,7 +177,7 @@ export default function Frontier() {
 
   const fetchDomains = async () => {
     try {
-      const response = await fetch('http://localhost:8080/api/frontier/domains');
+      const response = await fetch(`${API_URL}/api/frontier/domains`);
       const data = await response.json();
       setDomains(data);
     } catch (err) {
@@ -211,7 +212,7 @@ export default function Frontier() {
 
   const fetchRolesForDomain = async (domainId: number) => {
     try {
-      const response = await fetch(`http://localhost:8080/api/frontier/domains/${domainId}/roles`);
+      const response = await fetch(`${API_URL}/api/frontier/domains/${domainId}/roles`);
       const data = await response.json();
       setRoles(data);
     } catch (err) {
@@ -249,7 +250,7 @@ export default function Frontier() {
 
     try {
       const response = await fetch(
-        `http://localhost:8080/api/core-loop/generate-detailed-path?userId=${userId}&roleId=${role.careerRoleId}`,
+        `${API_URL}/api/core-loop/generate-detailed-path?userId=${userId}&roleId=${role.careerRoleId}`,
         { method: 'POST' }
       );
 
@@ -369,7 +370,7 @@ export default function Frontier() {
       // If no session exists, create one
       if (!currentSessionId) {
         const proposeResponse = await fetch(
-          `http://localhost:8080/api/sessions/propose?userId=${userId}&skillNodeId=${focusNode.skillNodeId}`,
+          `${API_URL}/api/sessions/propose?userId=${userId}&skillNodeId=${focusNode.skillNodeId}`,
           { method: 'POST' }
         );
 
@@ -382,7 +383,7 @@ export default function Frontier() {
 
       // Start the PROBE assessment (this will also start the session internally)
       const response = await fetch(
-        `http://localhost:8080/api/core-loop/start-probe?sessionId=${currentSessionId}`,
+        `${API_URL}/api/core-loop/start-probe?sessionId=${currentSessionId}`,
         { method: 'POST' }
       );
 
@@ -425,7 +426,7 @@ export default function Frontier() {
       };
 
       const response = await fetch(
-        `http://localhost:8080/api/core-loop/submit-quiz?sessionId=${sessionId}`,
+        `${API_URL}/api/core-loop/submit-quiz?sessionId=${sessionId}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
