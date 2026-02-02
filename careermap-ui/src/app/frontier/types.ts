@@ -58,11 +58,13 @@ export interface Quiz {
 
 export interface QuizQuestion {
   questionId: number;
-  type: string;
-  question: string;
-  options?: string[];
-  correctAnswer: string;
-  explanation: string;
+  questionNumber: number;
+  questionText: string;
+  questionType: string; // 'MCQ', 'FRQ', 'CODING'
+  optionA?: string;
+  optionB?: string;
+  optionC?: string;
+  optionD?: string;
 }
 
 export interface ZoomState {

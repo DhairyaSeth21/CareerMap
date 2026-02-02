@@ -696,73 +696,49 @@ export default function Frontier() {
               {/* Question */}
               {(() => {
                 const question = quiz.questions[currentQuestionIndex];
+                console.log('[QUIZ DEBUG] Current question:', JSON.stringify(question, null, 2));
+                console.log('[QUIZ DEBUG] All questions:', quiz.questions);
                 if (!question) return null;
+
+                // Build options array from individual fields
+                const options: { letter: string; text: string }[] = [];
+                if (question.optionA) options.push({ letter: 'A', text: question.optionA });
+                if (question.optionB) options.push({ letter: 'B', text: question.optionB });
+                if (question.optionC) options.push({ letter: 'C', text: question.optionC });
+                if (question.optionD) options.push({ letter: 'D', text: question.optionD });
+
+                console.log('[QUIZ DEBUG] questionType:', question.questionType, 'options:', options);
 
                 return (
                   <div className="space-y-6">
-                    <h3 className="text-2xl font-bold text-white">{question.question}</h3>
+                    <h3 className="text-2xl font-bold text-white">{question.questionText || 'No question text'}</h3>
 
-                    {/* Options */}
-                    {question.type === 'multiple_choice' && question.options && (
+                    {/* MCQ Options - show regardless of questionType for debugging */}
+                    {options.length > 0 ? (
                       <div className="space-y-3">
-                        {question.options.map((option, index) => (
+                        {options.map((option) => (
                           <button
-                            key={index}
+                            key={option.letter}
                             className={`w-full text-left p-4 rounded-lg border-2 transition-all
-                              ${answers.get(currentQuestionIndex) === option
+                              ${answers.get(currentQuestionIndex) === option.letter
                                 ? 'border-indigo-500 bg-indigo-500/20'
                                 : 'border-slate-700 hover:border-slate-600 bg-slate-800'
                               }`}
                             onClick={() => {
                               const newAnswers = new Map(answers);
-                              newAnswers.set(currentQuestionIndex, option);
+                              newAnswers.set(currentQuestionIndex, option.letter);
                               setAnswers(newAnswers);
                             }}
                           >
-                            <span className="text-white">{option}</span>
+                            <span className="text-slate-400 font-bold mr-3">{option.letter}.</span>
+                            <span className="text-white">{option.text}</span>
                           </button>
                         ))}
                       </div>
-                    )}
-
-                    {question.type === 'true_false' && (
-                      <div className="grid grid-cols-2 gap-4">
-                        {['true', 'false'].map((option) => (
-                          <button
-                            key={option}
-                            className={`p-6 rounded-lg border-2 transition-all
-                              ${answers.get(currentQuestionIndex) === option
-                                ? 'border-indigo-500 bg-indigo-500/20'
-                                : 'border-slate-700 hover:border-slate-600 bg-slate-800'
-                              }`}
-                            onClick={() => {
-                              const newAnswers = new Map(answers);
-                              newAnswers.set(currentQuestionIndex, option);
-                              setAnswers(newAnswers);
-                            }}
-                          >
-                            <span className="text-white font-semibold capitalize">{option}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    {question.type === 'code_completion' && (
-                      <div className="space-y-3">
-                        <label className="block text-slate-300 text-sm font-medium mb-2">
-                          Your answer:
-                        </label>
-                        <input
-                          type="text"
-                          value={answers.get(currentQuestionIndex) || ''}
-                          onChange={(e) => {
-                            const newAnswers = new Map(answers);
-                            newAnswers.set(currentQuestionIndex, e.target.value);
-                            setAnswers(newAnswers);
-                          }}
-                          className="w-full px-4 py-3 bg-slate-800 border-2 border-slate-700 rounded-lg text-white font-mono focus:outline-none focus:border-indigo-500 transition-all"
-                          placeholder="Type your answer here..."
-                        />
+                    ) : (
+                      <div className="p-4 bg-red-500/20 border border-red-500 rounded-lg">
+                        <p className="text-red-400">No options available. Question type: {question.questionType || 'undefined'}</p>
+                        <pre className="text-xs text-slate-400 mt-2 overflow-auto">{JSON.stringify(question, null, 2)}</pre>
                       </div>
                     )}
 
