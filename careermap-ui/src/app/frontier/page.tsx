@@ -433,8 +433,8 @@ export default function Frontier() {
       setShowQuiz(false);
       setShowResults(true);
 
-      // Mark the skill as completed if passed
-      if (data.passed && focusNode) {
+      // Mark the skill as completed if passed (80%+)
+      if (data.score >= 80 && focusNode) {
         setCompletedNodeIds(prev => new Set(prev).add(focusNode.skillNodeId));
         setEdlsgPhases(prev => new Map(prev).set(focusNode.skillNodeId, 'grow'));
       }
@@ -473,7 +473,7 @@ export default function Frontier() {
 
   const handleContinueLearning = () => {
     // Mark node as completed if score is high enough (80%+)
-    if (results && results.score >= 0.8 && focusNode) {
+    if (results && results.score >= 80 && focusNode) {
       setCompletedNodeIds(prev => new Set([...prev, focusNode.skillNodeId]));
       // EDLSG: Node completed → GROW phase
       setEdlsgPhases(prev => new Map(prev).set(focusNode.skillNodeId, 'grow'));
@@ -696,8 +696,6 @@ export default function Frontier() {
               {/* Question */}
               {(() => {
                 const question = quiz.questions[currentQuestionIndex];
-                console.log('[QUIZ DEBUG] Current question:', JSON.stringify(question, null, 2));
-                console.log('[QUIZ DEBUG] All questions:', quiz.questions);
                 if (!question) return null;
 
                 // Build options array from individual fields
@@ -707,13 +705,11 @@ export default function Frontier() {
                 if (question.optionC) options.push({ letter: 'C', text: question.optionC });
                 if (question.optionD) options.push({ letter: 'D', text: question.optionD });
 
-                console.log('[QUIZ DEBUG] questionType:', question.questionType, 'options:', options);
-
                 return (
                   <div className="space-y-6">
-                    <h3 className="text-2xl font-bold text-white">{question.questionText || 'No question text'}</h3>
+                    <h3 className="text-2xl font-bold text-white">{question.questionText}</h3>
 
-                    {/* MCQ Options - show regardless of questionType for debugging */}
+                    {/* MCQ Options */}
                     {options.length > 0 ? (
                       <div className="space-y-3">
                         {options.map((option) => (
@@ -736,10 +732,7 @@ export default function Frontier() {
                         ))}
                       </div>
                     ) : (
-                      <div className="p-4 bg-red-500/20 border border-red-500 rounded-lg">
-                        <p className="text-red-400">No options available. Question type: {question.questionType || 'undefined'}</p>
-                        <pre className="text-xs text-slate-400 mt-2 overflow-auto">{JSON.stringify(question, null, 2)}</pre>
-                      </div>
+                      <p className="text-slate-400">Loading options...</p>
                     )}
 
                     {/* Navigation */}
@@ -793,24 +786,24 @@ export default function Frontier() {
                   animate={{ scale: 1 }}
                   transition={{ type: 'spring', delay: 0.2 }}
                 >
-                  {Math.round(results.score * 100)}%
+                  {Math.round(results.score)}%
                 </motion.div>
                 <p className="text-2xl text-white font-semibold mb-2">
-                  {results.score >= 0.8 ? 'Excellent!' : results.score >= 0.6 ? 'Good Job!' : 'Keep Learning!'}
+                  {results.score >= 80 ? 'Excellent!' : results.score >= 60 ? 'Good Job!' : 'Keep Learning!'}
                 </p>
                 <p className="text-slate-400">
-                  {results.correct} out of {results.total} correct
+                  {results.correctCount} out of {results.totalQuestions} correct
                 </p>
-                {results.confidenceChange && (
+                {results.stateTransition && (
                   <p className="text-purple-400 mt-2">
-                    Confidence: {Math.round(results.confidenceChange.before * 100)}% → {Math.round(results.confidenceChange.after * 100)}%
+                    Confidence: {Math.round(results.stateTransition.oldConfidence * 100)}% → {Math.round(results.stateTransition.newConfidence * 100)}%
                   </p>
                 )}
               </div>
 
               {/* Answer Review */}
               <div className="space-y-4 mb-8">
-                {results.gradedAnswers && results.gradedAnswers.map((answer: any, index: number) => (
+                {results.allResults && results.allResults.map((answer: any, index: number) => (
                   <div
                     key={index}
                     className={`p-4 rounded-lg border ${
@@ -821,17 +814,17 @@ export default function Frontier() {
                       <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${
                         answer.isCorrect ? 'bg-green-600' : 'bg-red-600'
                       }`}>
-                        <span className="text-white text-sm font-bold">{index + 1}</span>
+                        <span className="text-white text-sm font-bold">{answer.questionNumber || index + 1}</span>
                       </div>
-                      <p className="text-white flex-1">{answer.question}</p>
+                      <p className="text-white flex-1">{answer.questionText}</p>
                     </div>
                     {!answer.isCorrect && (
                       <div className="ml-9 space-y-2">
                         <p className="text-red-400 text-sm">
-                          Your answer: {answer.userAnswer}
+                          Your answer: {answer.yourAnswerText || answer.yourAnswer}
                         </p>
                         <p className="text-green-400 text-sm">
-                          Correct answer: {answer.correctAnswer}
+                          Correct answer: {answer.correctAnswerText || answer.correctAnswer}
                         </p>
                         <p className="text-slate-300 text-sm mt-2">{answer.explanation}</p>
                       </div>
