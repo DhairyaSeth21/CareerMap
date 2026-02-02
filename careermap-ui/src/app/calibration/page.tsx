@@ -523,7 +523,7 @@ function CalibrationResults({
             Understanding Your Path Structure
           </h2>
           <p className="text-slate-400 text-center mb-8">
-            Here's how Ascent guides your learning
+            Here's how Provn guides your learning
           </p>
 
           {/* Visual: Linear + Branching Diagram */}
@@ -772,7 +772,7 @@ function CalibrationResults({
 
           <div className="mt-8 p-6 bg-blue-900/10 border border-blue-800/30 rounded-lg max-w-3xl mx-auto">
             <p className="text-sm text-slate-300 text-center">
-              <span className="text-blue-400 font-semibold">Ascent difference:</span> You don't just watch videos.
+              <span className="text-blue-400 font-semibold">Provn difference:</span> You don't just watch videos.
               You build evidence employers recognize. Each skill requires proof before progression.
             </p>
           </div>

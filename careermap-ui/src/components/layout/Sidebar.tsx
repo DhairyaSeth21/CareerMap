@@ -26,7 +26,7 @@ export default function Sidebar() {
       {/* Logo / Header */}
       <div className="px-5 py-6">
         <h1 className="text-[15px] font-semibold tracking-tight" style={{ color: 'var(--text-primary)' }}>
-          Ascent
+          Provn
         </h1>
       </div>
 

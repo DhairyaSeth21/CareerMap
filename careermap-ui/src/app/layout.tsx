@@ -11,7 +11,7 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "Ascent",
+  title: "Provn",
   description: "Evidence-based learning platform - Know what you actually know",
 };
 

@@ -7,9 +7,9 @@ export default function Footer() {
     <footer className="w-full bg-slate-900 border-t border-slate-800 mt-auto">
       <div className="max-w-7xl mx-auto px-6 py-8">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* About Ascent */}
+          {/* About Provn */}
           <div>
-            <h3 className="text-white font-bold text-lg mb-3">Ascent</h3>
+            <h3 className="text-white font-bold text-lg mb-3">Provn</h3>
             <p className="text-slate-400 text-sm leading-relaxed">
               Evidence-based learning platform for software engineers.
               Built with Spring Boot, React, and AI.
@@ -79,7 +79,7 @@ export default function Footer() {
             <span>Designed & Developed by <span className="text-white font-semibold">Dhairya Seth</span></span>
           </div>
           <div className="text-slate-500 text-xs">
-            © 2026 Ascent. All rights reserved.
+            © 2026 Provn. All rights reserved.
           </div>
         </div>
       </div>

@@ -234,7 +234,7 @@ export default function Landing() {
               <div className="p-6 bg-slate-900/50 border border-slate-800 rounded-xl">
                 <h3 className="text-lg font-semibold text-white mb-3">About This Project</h3>
                 <p className="text-slate-400 leading-relaxed">
-                  Ascent was built from the ground up as a comprehensive evidence-based learning platform.
+                  Provn was built from the ground up as a comprehensive evidence-based learning platform.
                   Every line of code, from the Spring Boot backend to the React frontend, was written with
                   the goal of solving a real problem: helping engineers know what they actually know, not what they think they know.
                 </p>
@@ -404,7 +404,7 @@ function AuthModal({ onClose }: { onClose: () => void }) {
           <>
             <div className="text-center mb-8">
               <h2 className="text-3xl font-bold text-white mb-2">Create Account</h2>
-              <p className="text-slate-400">Join Ascent today</p>
+              <p className="text-slate-400">Join Provn today</p>
             </div>
 
             <form onSubmit={handleSignup} className="space-y-4">
