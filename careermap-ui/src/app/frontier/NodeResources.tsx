@@ -62,7 +62,7 @@ export default function NodeResources({ nodeId, userId, nodeName }: NodeResource
     try {
       setRatingResource(resourceId);
 
-      const response = await fetch('${API_URL}/api/resources/rate', {
+      const response = await fetch(`${API_URL}/api/resources/rate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -94,7 +94,7 @@ export default function NodeResources({ nodeId, userId, nodeName }: NodeResource
     try {
       setRatingResource(resourceId);
 
-      const response = await fetch('${API_URL}/api/resources/find-different', {
+      const response = await fetch(`${API_URL}/api/resources/find-different`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

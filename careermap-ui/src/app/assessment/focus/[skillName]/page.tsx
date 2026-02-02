@@ -45,7 +45,7 @@ export default function FocusAssessmentPage() {
 
   const generateQuiz = async () => {
     try {
-      const res = await fetch("${API_URL}/api/quizzes/generate", {
+      const res = await fetch(`${API_URL}/api/quizzes/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

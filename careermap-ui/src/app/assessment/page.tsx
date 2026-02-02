@@ -74,7 +74,7 @@ export default function AssessmentPage() {
 
   const loadSkills = async () => {
     try {
-      const res = await fetch('${API_URL}/api/skills/catalog');
+      const res = await fetch(`${API_URL}/api/skills/catalog`);
       const data = await res.json();
       setSkills(data);
     } catch (err: any) {
@@ -93,7 +93,7 @@ export default function AssessmentPage() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('${API_URL}/api/quizzes/generate', {
+      const res = await fetch(`${API_URL}/api/quizzes/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

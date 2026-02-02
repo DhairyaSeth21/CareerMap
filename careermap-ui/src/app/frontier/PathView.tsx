@@ -734,7 +734,7 @@ export default function PathView({ role, path, focusNode, completedNodeIds, edls
                   setShowAIExplanation(true);
 
                   try {
-                    const response = await fetch('${API_URL}/api/ai/explain', {
+                    const response = await fetch(`${API_URL}/api/ai/explain`, {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',

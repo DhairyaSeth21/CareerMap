@@ -26,7 +26,7 @@ export default function EvidenceModal({ userId, onClose, onSubmit }: EvidenceMod
     setError(null);
 
     try {
-      const response = await fetch('${API_URL}/api/evidence/project', {
+      const response = await fetch(`${API_URL}/api/evidence/project`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

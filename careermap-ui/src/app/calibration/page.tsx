@@ -815,7 +815,7 @@ function CalibrationResults({
                       formData.append('userId', userId);
                       formData.append('file', file);
 
-                      const response = await fetch('${API_URL}/api/v1/resume/analyze', {
+                      const response = await fetch(`${API_URL}/api/v1/resume/analyze`, {
                         method: 'POST',
                         body: formData,
                       });
