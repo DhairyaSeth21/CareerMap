@@ -53,7 +53,7 @@ export default function LoginPage() {
         <div className="text-center mb-8 animate-fade-in">
           <Link href="/landing">
             <h1 className="text-[24px] font-bold tracking-tight mb-2" style={{ color: 'var(--text-primary)' }}>
-              Provn
+              Levld
             </h1>
           </Link>
           <p className="text-[14px]" style={{ color: 'var(--text-secondary)' }}>

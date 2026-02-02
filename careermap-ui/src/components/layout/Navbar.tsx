@@ -43,7 +43,7 @@ export default function Navbar() {
       <div className="flex items-center gap-12">
         <Link href="/">
           <h1 className="text-[17px] font-semibold tracking-tight hover:opacity-70 transition-opacity" style={{ color: 'var(--text-primary)' }}>
-            Provn
+            Levld
           </h1>
         </Link>
 
