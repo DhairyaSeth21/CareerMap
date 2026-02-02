@@ -20,7 +20,10 @@ public class CorsConfig {
         config.setAllowCredentials(true);
         config.setAllowedOriginPatterns(Arrays.asList(
             "http://localhost:*",
-            "https://*.up.railway.app"
+            "https://*.up.railway.app",
+            "https://levld.co",
+            "https://www.levld.co",
+            "https://*.levld.co"
         ));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
