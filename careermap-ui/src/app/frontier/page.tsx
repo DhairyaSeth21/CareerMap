@@ -365,35 +365,26 @@ export default function Frontier() {
     setError(null);
 
     try {
-      let currentSessionId = sessionId;
-
-      // If no session exists, create one
-      if (!currentSessionId) {
-        const proposeResponse = await fetch(
-          `${API_URL}/api/sessions/propose?userId=${userId}&skillNodeId=${focusNode.skillNodeId}`,
-          { method: 'POST' }
-        );
-
-        if (!proposeResponse.ok) throw new Error('Failed to create session');
-
-        const sessionData = await proposeResponse.json();
-        currentSessionId = sessionData.sessionId;
-        setSessionId(currentSessionId);
-      }
-
-      // Start the PROBE assessment (this will also start the session internally)
-      const response = await fetch(
-        `${API_URL}/api/core-loop/start-probe?sessionId=${currentSessionId}`,
-        { method: 'POST' }
-      );
+      // Generate quiz directly using skill name (bypasses session creation)
+      // This works even when skill nodes don't exist in the database
+      const response = await fetch(`${API_URL}/api/quizzes/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          skillName: focusNode.name,
+          difficulty: 'Intermediate',
+          numQuestions: 10
+        })
+      });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to start PROBE');
+        throw new Error(errorData.error || 'Failed to generate quiz');
       }
 
       const data = await response.json();
-      setQuiz(data.quiz);
+      setQuiz(data);
       setCurrentQuestionIndex(0);
       setAnswers(new Map());
       setShowFocusPanel(false);
@@ -410,27 +401,28 @@ export default function Frontier() {
    * Submit quiz answers
    */
   const handleSubmitQuiz = async () => {
-    if (!quiz || !sessionId) return;
+    if (!quiz) return;
 
     setLoading(true);
     setError(null);
 
     try {
       // Convert answers Map to submission format
-      const submission = {
-        answers: quiz.questions.map((q, index) => ({
-          question: q.question,
-          userAnswer: answers.get(index) || '',
-          correctAnswer: q.correctAnswer,
-        })),
-      };
+      // Backend expects answers as a Map<String, String> where key is questionId
+      const answersMap: Record<string, string> = {};
+      quiz.questions.forEach((q: any, index: number) => {
+        answersMap[q.questionId?.toString() || index.toString()] = answers.get(index) || '';
+      });
 
       const response = await fetch(
-        `${API_URL}/api/core-loop/submit-quiz?sessionId=${sessionId}`,
+        `${API_URL}/api/quizzes/${quiz.quizId}/submit`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(submission),
+          body: JSON.stringify({
+            answers: answersMap,
+            timeTaken: 300 // 5 minutes default
+          }),
         }
       );
 
@@ -440,6 +432,12 @@ export default function Frontier() {
       setResults(data);
       setShowQuiz(false);
       setShowResults(true);
+
+      // Mark the skill as completed if passed
+      if (data.passed && focusNode) {
+        setCompletedNodeIds(prev => new Set(prev).add(focusNode.skillNodeId));
+        setEdlsgPhases(prev => new Map(prev).set(focusNode.skillNodeId, 'grow'));
+      }
     } catch (err) {
       console.error('Failed to submit quiz:', err);
       setError('Failed to submit answers');
