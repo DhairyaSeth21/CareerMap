@@ -33,8 +33,8 @@ public class SessionController {
         try {
             Session session = sessionService.proposeProbeSession(userId, skillNodeId);
             return ResponseEntity.ok(session);
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", e.getMessage()));
         }
     }
 
