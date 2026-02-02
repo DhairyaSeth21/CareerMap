@@ -773,7 +773,9 @@ export default function Frontier() {
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="bg-gradient-to-br from-slate-900 to-slate-800 border border-green-500 rounded-2xl p-8 max-w-3xl w-full my-8"
+              className={`bg-gradient-to-br from-slate-900 to-slate-800 border rounded-2xl p-8 max-w-3xl w-full my-8 ${
+                results.score >= 80 ? 'border-green-500' : results.score >= 60 ? 'border-yellow-500' : 'border-red-500'
+              }`}
               initial={{ scale: 0.8, y: 50 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.8, y: 50 }}
@@ -781,7 +783,13 @@ export default function Frontier() {
               {/* Score */}
               <div className="text-center mb-8">
                 <motion.div
-                  className="inline-block text-6xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent mb-4"
+                  className={`inline-block text-6xl font-bold bg-clip-text text-transparent mb-4 ${
+                    results.score >= 80
+                      ? 'bg-gradient-to-r from-green-400 to-emerald-400'
+                      : results.score >= 60
+                        ? 'bg-gradient-to-r from-yellow-400 to-orange-400'
+                        : 'bg-gradient-to-r from-red-400 to-rose-400'
+                  }`}
                   initial={{ scale: 0 }}
                   animate={{ scale: 1 }}
                   transition={{ type: 'spring', delay: 0.2 }}
