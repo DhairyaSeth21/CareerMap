@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
+import { API_URL } from '../../config/api';
 
 interface Skill {
   skillId: number;
@@ -73,7 +74,7 @@ export default function AssessmentPage() {
 
   const loadSkills = async () => {
     try {
-      const res = await fetch('http://localhost:8080/api/skills/catalog');
+      const res = await fetch('${API_URL}/api/skills/catalog');
       const data = await res.json();
       setSkills(data);
     } catch (err: any) {
@@ -92,7 +93,7 @@ export default function AssessmentPage() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('http://localhost:8080/api/quizzes/generate', {
+      const res = await fetch('${API_URL}/api/quizzes/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -130,7 +131,7 @@ export default function AssessmentPage() {
       setLoading(true);
       const timeTaken = Math.floor((Date.now() - quizStartTime) / 1000);
 
-      const res = await fetch(`http://localhost:8080/api/quizzes/${activeQuiz.quizId}/submit`, {
+      const res = await fetch(`${API_URL}/api/quizzes/${activeQuiz.quizId}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answers: quizAnswers, timeTaken })

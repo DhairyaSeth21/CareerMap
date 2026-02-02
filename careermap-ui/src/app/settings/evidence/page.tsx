@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Upload, CheckCircle, XCircle, ArrowLeft, Loader2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { API_URL } from '../../../config/api';
 
 interface ExtractedSkill {
   name: string;
@@ -52,7 +53,7 @@ export default function EvidencePage() {
       formData.append('userId', userId.toString());
       formData.append('file', file); // Send the actual file, not text
 
-      const response = await fetch('http://localhost:8080/api/v1/resume/analyze', {
+      const response = await fetch('${API_URL}/api/v1/resume/analyze', {
         method: 'POST',
         body: formData,
       });
@@ -89,7 +90,7 @@ export default function EvidencePage() {
     try {
       const userId = parseInt(localStorage.getItem('userId') || '1');
 
-      const response = await fetch('http://localhost:8080/api/v1/resume/mark-skills', {
+      const response = await fetch('${API_URL}/api/v1/resume/mark-skills', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

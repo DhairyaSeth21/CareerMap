@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
+import { API_URL } from '../../../../config/api';
 
 /**
  * Focus Mode Assessment - Full-screen quiz experience
@@ -44,7 +45,7 @@ export default function FocusAssessmentPage() {
 
   const generateQuiz = async () => {
     try {
-      const res = await fetch("http://localhost:8080/api/quizzes/generate", {
+      const res = await fetch("${API_URL}/api/quizzes/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -90,7 +91,7 @@ export default function FocusAssessmentPage() {
     const timeTaken = Math.floor((Date.now() - startTime) / 1000);
 
     try {
-      const res = await fetch(`http://localhost:8080/api/quizzes/${quizId}/submit`, {
+      const res = await fetch(`${API_URL}/api/quizzes/${quizId}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

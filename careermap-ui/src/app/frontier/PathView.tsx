@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import { useState, useRef, useEffect } from 'react';
 import { DetailedPathNode, CareerRole } from './types';
 import { ArrowLeft, Target, Maximize2, Lock, CheckCircle, Play, BookOpen, Eye, X, Loader2, Sparkles } from 'lucide-react';
+import { API_URL } from '../../config/api';
 
 interface PathViewProps {
   role: CareerRole;
@@ -733,7 +734,7 @@ export default function PathView({ role, path, focusNode, completedNodeIds, edls
                   setShowAIExplanation(true);
 
                   try {
-                    const response = await fetch('http://localhost:8080/api/ai/explain', {
+                    const response = await fetch('${API_URL}/api/ai/explain', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',

@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Starfield from '../components/Starfield';
 import { ArrowRight, Check, TrendingUp, AlertCircle, HelpCircle, Upload, Loader2, CheckCircle } from 'lucide-react';
 import { getCalibrationQuestions, type IntenseQuestion } from './intense-questions';
+import { API_URL } from '../../config/api';
 
 /**
  * Calibration Page - Michelin Star Edition
@@ -814,7 +815,7 @@ function CalibrationResults({
                       formData.append('userId', userId);
                       formData.append('file', file);
 
-                      const response = await fetch('http://localhost:8080/api/v1/resume/analyze', {
+                      const response = await fetch('${API_URL}/api/v1/resume/analyze', {
                         method: 'POST',
                         body: formData,
                       });

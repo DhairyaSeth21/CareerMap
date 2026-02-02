@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Play, FileText, Book, Star, ThumbsUp, RefreshCw, ExternalLink, Clock, Award } from 'lucide-react';
+import { API_URL } from '../../config/api';
 
 interface LearningResource {
   resourceId: number;
@@ -41,7 +42,7 @@ export default function NodeResources({ nodeId, userId, nodeName }: NodeResource
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`http://localhost:8080/api/resources/node/${nodeId}?userId=${userId}`);
+      const response = await fetch(`${API_URL}/api/resources/node/${nodeId}?userId=${userId}`);
       const data = await response.json();
 
       if (data.success) {
@@ -61,7 +62,7 @@ export default function NodeResources({ nodeId, userId, nodeName }: NodeResource
     try {
       setRatingResource(resourceId);
 
-      const response = await fetch('http://localhost:8080/api/resources/rate', {
+      const response = await fetch('${API_URL}/api/resources/rate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -93,7 +94,7 @@ export default function NodeResources({ nodeId, userId, nodeName }: NodeResource
     try {
       setRatingResource(resourceId);
 
-      const response = await fetch('http://localhost:8080/api/resources/find-different', {
+      const response = await fetch('${API_URL}/api/resources/find-different', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
