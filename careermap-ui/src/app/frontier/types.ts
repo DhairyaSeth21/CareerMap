@@ -51,11 +51,13 @@ export interface FocusNode extends DetailedPathNode {
 }
 
 export interface Quiz {
+  quizId: number;
   skillName: string;
   questions: QuizQuestion[];
 }
 
 export interface QuizQuestion {
+  questionId: number;
   type: string;
   question: string;
   options?: string[];
